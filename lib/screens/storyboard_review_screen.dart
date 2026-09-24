@@ -178,15 +178,18 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
               referenceImageBase64: protagonistRef,
             );
             page.imageBase64 = b64;
+            page.generationError = null;
             // 锁定第一页成功生成的角色图作为全书的主角参考基准图
             if (protagonistRef == null && b64 != null && b64.isNotEmpty) {
               protagonistRef = b64;
             }
           } catch (e) {
             page.isPlaceholder = true;
+            page.generationError = e.toString();
           }
         } else {
           page.isPlaceholder = true;
+          page.generationError = '未配置生图 API Key';
         }
       }
 

@@ -234,8 +234,36 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                     )
                                   : Container(
                                       color: Colors.black26,
-                                      child: const Center(
-                                        child: Text('🎨 插画准备中...'),
+                                      padding: const EdgeInsets.all(20),
+                                      child: Center(
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(Icons.broken_image_outlined, size: 48, color: Colors.orangeAccent),
+                                            const SizedBox(height: 12),
+                                            const Text('⚠️ 插画未成功生成', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              page.generationError != null
+                                                  ? '原因: ${page.generationError}'
+                                                  : '可能是上游网络抖动或触发了安全内容拦截',
+                                              textAlign: TextAlign.center,
+                                              style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                              maxLines: 3,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            const SizedBox(height: 16),
+                                            ElevatedButton.icon(
+                                              icon: const Icon(Icons.refresh, size: 16),
+                                              label: const Text('点击重新绘制本页'),
+                                              style: ElevatedButton.styleFrom(
+                                                backgroundColor: const Color(0xFFD8A24A),
+                                                foregroundColor: Colors.black87,
+                                              ),
+                                              onPressed: _openRegenDialog,
+                                            ),
+                                          ],
+                                        ),
                                       ),
                                     ),
                             ),
