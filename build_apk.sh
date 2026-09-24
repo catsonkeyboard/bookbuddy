@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # BookBuddy App - Android APK 一键自动化打包脚本
+# 完美兼容 macOS 默认 Bash 3.2 / Linux / Zsh
 # 支持自动环境检测、Debug/Release模式切换、自动安装到模拟器/真机
 # ==============================================================================
 
@@ -45,11 +46,13 @@ echo -e "${GREEN}✓ Flutter 环境就绪: $(flutter --version | head -n 1)${NC}
 
 # 3. 确定构建模式 (默认 debug，传入 release 则打 release 包)
 BUILD_MODE="debug"
-if [ "$1" == "release" ] || [ "$1" == "--release" ] || [ "$1" == "-r" ]; then
+BUILD_MODE_DISPLAY="DEBUG"
+if [ "$1" = "release" ] || [ "$1" = "--release" ] || [ "$1" = "-r" ]; then
     BUILD_MODE="release"
+    BUILD_MODE_DISPLAY="RELEASE"
 fi
 
-echo -e "\n${YELLOW}📦 准备构建模式: [${BUILD_MODE^^}]${NC}"
+echo -e "\n${YELLOW}📦 准备构建模式: [${BUILD_MODE_DISPLAY}]${NC}"
 
 # 4. 获取依赖
 echo -e "\n${YELLOW}📥 正在同步 Flutter 依赖库...${NC}"
@@ -57,7 +60,7 @@ flutter pub get
 
 # 5. 执行打包构建
 echo -e "\n${YELLOW}🚀 正在编译 Android APK，请稍候...${NC}"
-if [ "$BUILD_MODE" == "release" ]; then
+if [ "$BUILD_MODE" = "release" ]; then
     flutter build apk --release
     APK_PATH="$SCRIPT_DIR/build/app/outputs/flutter-apk/app-release.apk"
 else
@@ -79,13 +82,18 @@ if [ -f "$APK_PATH" ]; then
         ONLINE_DEVICES=$(adb devices | grep -v "List" | grep "device$" | wc -l | tr -d ' ')
         if [ "$ONLINE_DEVICES" -gt "0" ]; then
             echo -e "\n${BLUE}📱 检测到已有 $ONLINE_DEVICES 台 Android 设备/模拟器已连接！${NC}"
-            read -p "是否直接安装到该设备？(y/N): " -n 1 -r
+            read -p "是否直接安装到该设备？(y/N): " -n 1 -r REPLY
             echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                echo -e "${YELLOW}正在安装到设备...${NC}"
-                adb install -r "$APK_PATH"
-                echo -e "${GREEN}✅ 安装完成！可直接在 Android 平板/模拟器上打开 BookBuddy 体验。${NC}"
-            fi
+            case "$REPLY" in
+                [yY]*)
+                    echo -e "${YELLOW}正在安装到设备...${NC}"
+                    adb install -r "$APK_PATH"
+                    echo -e "${GREEN}✅ 安装完成！可直接在 Android 平板/模拟器上打开 BookBuddy 体验。${NC}"
+                    ;;
+                *)
+                    echo -e "${YELLOW}已跳过安装。${NC}"
+                    ;;
+            esac
         else
             echo -e "\n${YELLOW}💡 提示: 当前未连接 Android 真机。若需安装到模拟器，可运行:${NC}"
             echo -e "   flutter emulators --launch Pixel_Tablet"
