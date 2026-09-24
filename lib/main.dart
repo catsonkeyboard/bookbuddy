@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'models/book.dart';
+import 'models/fairy_tale_catalog.dart';
 import 'screens/book_reader_screen.dart';
 import 'screens/create_book_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/tale_recommendation_dialog.dart';
 import 'services/book_storage_service.dart';
 
 void main() {
@@ -124,21 +126,42 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                   ],
                                 ),
                               ),
-                              ElevatedButton.icon(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFFD8A24A),
-                                  foregroundColor: Colors.black87,
-                                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                                ),
-                                icon: const Icon(Icons.add),
-                                label: const Text('新建绘本', style: TextStyle(fontWeight: FontWeight.bold)),
-                                onPressed: () async {
-                                  await Navigator.push(
-                                    context,
-                                    MaterialPageRoute(builder: (_) => const CreateBookScreen()),
-                                  );
-                                  _loadBooks();
-                                },
+                              Row(
+                                children: [
+                                  OutlinedButton.icon(
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: const Color(0xFFD8A24A),
+                                      side: const BorderSide(color: Color(0xFFD8A24A)),
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    ),
+                                    icon: const Text('🌟', style: TextStyle(fontSize: 16)),
+                                    label: const Text('经典故事灵感', style: TextStyle(fontWeight: FontWeight.bold)),
+                                    onPressed: () async {
+                                      await showDialog(
+                                        context: context,
+                                        builder: (_) => const TaleRecommendationDialog(),
+                                      );
+                                      _loadBooks();
+                                    },
+                                  ),
+                                  const SizedBox(width: 12),
+                                  ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFFD8A24A),
+                                      foregroundColor: Colors.black87,
+                                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                                    ),
+                                    icon: const Icon(Icons.add),
+                                    label: const Text('新建绘本', style: TextStyle(fontWeight: FontWeight.bold)),
+                                    onPressed: () async {
+                                      await Navigator.push(
+                                        context,
+                                        MaterialPageRoute(builder: (_) => const CreateBookScreen()),
+                                      );
+                                      _loadBooks();
+                                    },
+                                  ),
+                                ],
                               ),
                             ],
                           ),
