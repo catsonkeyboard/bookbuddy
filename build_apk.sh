@@ -25,7 +25,13 @@ echo -e "${BLUE}======================================================${NC}"
 export PUB_HOSTED_URL="https://pub.flutter-io.cn"
 export FLUTTER_STORAGE_BASE_URL="https://storage.flutter-io.cn"
 
-echo -e "\n${GREEN}🚀 已启用国内高速镜像源:${NC}"
+# 清理当前会话所有残留的终端代理环境变量，防止把 Gradle 带偏
+unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+
+# 强制重置 Gradle 内部 JVM 代理参数（直接在命令行覆盖所有历史残留守护进程的代理）
+GRADLE_NO_PROXY_OPTS="-Dhttp.proxyHost= -Dhttp.proxyPort= -Dhttps.proxyHost= -Dhttps.proxyPort="
+
+echo -e "\n${GREEN}🚀 已启用国内高速镜像源 (并强制净化终端与 JVM 代理设置):${NC}"
 echo -e "   • PUB_HOSTED_URL = $PUB_HOSTED_URL"
 echo -e "   • FLUTTER_STORAGE_BASE_URL = $FLUTTER_STORAGE_BASE_URL"
 echo -e "   • Gradle/Android 仓库 = 阿里云 Maven 镜像 (Google/Central/Gradle-Plugin)"
@@ -81,10 +87,10 @@ echo -e "\n${YELLOW}🚀 正在编译 Android ARM64 APK (目标平台: android-a
 echo -e "${GREEN}⚡ 实时编译输出流已启动，各项任务进度将直接滚动打印在下方：${NC}\n"
 
 if [ "$BUILD_MODE" = "release" ]; then
-    flutter build apk --release --target-platform android-arm64 $VERBOSE_FLAG
+    flutter build apk --release --target-platform android-arm64 $VERBOSE_FLAG --dart-define=GRADLE_OPTS="$GRADLE_NO_PROXY_OPTS"
     APK_PATH="$SCRIPT_DIR/build/app/outputs/flutter-apk/app-release.apk"
 else
-    flutter build apk --debug --target-platform android-arm64 $VERBOSE_FLAG
+    flutter build apk --debug --target-platform android-arm64 $VERBOSE_FLAG --dart-define=GRADLE_OPTS="$GRADLE_NO_PROXY_OPTS"
     APK_PATH="$SCRIPT_DIR/build/app/outputs/flutter-apk/app-debug.apk"
 fi
 
