@@ -21,9 +21,14 @@ echo -e "${BLUE}======================================================${NC}"
 echo -e "${BLUE}       📖 BookBuddy 绘本工坊 - Android APK 打包脚本      ${NC}"
 echo -e "${BLUE}======================================================${NC}"
 
-# 1. 环境变量配置
+# 1. 环境变量配置 (国内加速镜像)
 export PUB_HOSTED_URL="https://pub.flutter-io.cn"
 export FLUTTER_STORAGE_BASE_URL="https://storage.flutter-io.cn"
+
+echo -e "\n${GREEN}🚀 已启用国内高速镜像源:${NC}"
+echo -e "   • PUB_HOSTED_URL = $PUB_HOSTED_URL"
+echo -e "   • FLUTTER_STORAGE_BASE_URL = $FLUTTER_STORAGE_BASE_URL"
+echo -e "   • Gradle/Android 仓库 = 阿里云 Maven 镜像 (Google/Central/Gradle-Plugin)"
 
 if [ -d "$HOME/development/flutter/bin" ]; then
     export PATH="$HOME/development/flutter/bin:$PATH"
