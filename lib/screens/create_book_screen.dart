@@ -2,22 +2,33 @@ import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import '../models/book.dart';
 import '../models/style_catalog.dart';
+import '../models/fairy_tale_catalog.dart';
 import '../services/book_engine_service.dart';
 import '../services/book_storage_service.dart';
 import '../services/settings_service.dart';
 import 'book_reader_screen.dart';
+import 'tale_recommendation_dialog.dart';
 
 class CreateBookScreen extends StatefulWidget {
-  const CreateBookScreen({super.key});
+  final String? initialTitle;
+  final String? initialSynopsis;
+  final String? initialStyleId;
+
+  const CreateBookScreen({
+    super.key,
+    this.initialTitle,
+    this.initialSynopsis,
+    this.initialStyleId,
+  });
 
   @override
   State<CreateBookScreen> createState() => _CreateBookScreenState();
 }
 
 class _CreateBookScreenState extends State<CreateBookScreen> {
-  final TextEditingController _titleCtrl = TextEditingController();
-  final TextEditingController _textCtrl = TextEditingController();
-  String _selectedStyleId = 'watercolor';
+  late final TextEditingController _titleCtrl;
+  late final TextEditingController _textCtrl;
+  late String _selectedStyleId;
 
   bool _isProcessing = false;
   String _statusText = '';
@@ -25,6 +36,21 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
   final BookEngineService _engine = BookEngineService();
   final SettingsService _settingsService = SettingsService();
   final BookStorageService _storage = BookStorageService();
+
+  @override
+  void initState() {
+    super.initState();
+    _titleCtrl = TextEditingController(text: widget.initialTitle ?? '');
+    _textCtrl = TextEditingController(text: widget.initialSynopsis ?? '');
+    _selectedStyleId = widget.initialStyleId ?? 'watercolor';
+  }
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _textCtrl.dispose();
+    super.dispose();
+  }
 
   Future<void> _startGenerate() async {
     final title = _titleCtrl.text.trim();
@@ -123,7 +149,25 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('✨ 新建绘本作品')),
+      appBar: AppBar(
+        title: const Text('✨ 新建绘本作品'),
+        actions: [
+          TextButton.icon(
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFD8A24A),
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+            ),
+            icon: const Text('🌟', style: TextStyle(fontSize: 16)),
+            label: const Text('挑选经典童话', style: TextStyle(fontWeight: FontWeight.bold)),
+            onPressed: () async {
+              await showDialog(
+                context: context,
+                builder: (_) => const TaleRecommendationDialog(),
+              );
+            },
+          ),
+        ],
+      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 800),
