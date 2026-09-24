@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 import '../models/book.dart';
 import '../models/style_catalog.dart';
@@ -165,11 +166,42 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                       ),
                     ),
                     const SizedBox(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('📖 故事正文：', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                        Row(
+                          children: [
+                            TextButton.icon(
+                              style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                              icon: const Icon(Icons.paste_rounded, size: 16),
+                              label: const Text('从剪贴板粘贴', style: TextStyle(fontSize: 12)),
+                              onPressed: () async {
+                                final data = await Clipboard.getData(Clipboard.kTextPlain);
+                                if (data != null && data.text != null && data.text!.isNotEmpty) {
+                                  setState(() {
+                                    _textCtrl.text = data.text!.trim();
+                                  });
+                                }
+                              },
+                            ),
+                            TextButton.icon(
+                              style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                              icon: const Icon(Icons.clear, size: 16),
+                              label: const Text('清空', style: TextStyle(fontSize: 12)),
+                              onPressed: () => _textCtrl.clear(),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
                     TextField(
                       controller: _textCtrl,
                       maxLines: 6,
+                      enableInteractiveSelection: true,
                       decoration: const InputDecoration(
-                        labelText: '故事正文（可直接粘贴文本；若留空仅填书名，AI 将自动续写完整童话）',
+                        hintText: '可直接粘贴故事全文；若留空仅填书名，AI 将自动构思并续写完整童话...',
                         border: OutlineInputBorder(),
                         alignLabelWithHint: true,
                       ),

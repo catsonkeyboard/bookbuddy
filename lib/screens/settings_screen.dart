@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/app_settings.dart';
 import '../services/settings_service.dart';
 
@@ -79,6 +80,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Future<void> _pasteTo(TextEditingController ctrl, String fieldLabel) async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    if (data != null && data.text != null && data.text!.isNotEmpty) {
+      setState(() {
+        ctrl.text = data.text!.trim();
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('📋 已将剪贴板内容填入 $fieldLabel'),
+            duration: const Duration(seconds: 1),
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ 剪贴板为空或无可识别的文本内容'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _copyFrom(TextEditingController ctrl, String fieldLabel) async {
+    final text = ctrl.text.trim();
+    if (text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('⚠️ $fieldLabel 为空，无可复制内容'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('📄 已将 $fieldLabel 复制到剪贴板！'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    }
+  }
+
   void _onLlmTypeChanged(String? type) {
     if (type == null) return;
     setState(() {
@@ -108,6 +157,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _imgModelCtrl.text = 'dall-e-3';
       }
     });
+  }
+
+  Widget _buildKeyField({
+    required TextEditingController controller,
+    required String label,
+    required bool obscure,
+    required VoidCallback onToggleObscure,
+  }) {
+    return TextFormField(
+      controller: controller,
+      obscureText: obscure,
+      enableInteractiveSelection: true,
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+        suffixIcon: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: obscure ? '显示明文' : '隐藏密文',
+              icon: Icon(obscure ? Icons.visibility_off : Icons.visibility),
+              onPressed: onToggleObscure,
+            ),
+            IconButton(
+              tooltip: '从剪贴板粘贴',
+              icon: const Icon(Icons.paste_rounded),
+              onPressed: () => _pasteTo(controller, label),
+            ),
+            IconButton(
+              tooltip: '复制完整内容',
+              icon: const Icon(Icons.copy_rounded),
+              onPressed: () => _copyFrom(controller, label),
+            ),
+            const SizedBox(width: 4),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUrlField({
+    required TextEditingController controller,
+    required String label,
+    required String helper,
+  }) {
+    return TextFormField(
+      controller: controller,
+      enableInteractiveSelection: true,
+      decoration: InputDecoration(
+        labelText: label,
+        helperText: helper,
+        border: const OutlineInputBorder(),
+        suffixIcon: IconButton(
+          tooltip: '从剪贴板粘贴 URL',
+          icon: const Icon(Icons.paste_rounded),
+          onPressed: () => _pasteTo(controller, label),
+        ),
+      ),
+    );
   }
 
   @override
@@ -163,39 +271,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     onChanged: _onLlmTypeChanged,
                   ),
                   const SizedBox(height: 16),
-                  TextFormField(
+                  _buildUrlField(
                     controller: _llmUrlCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'API Base URL',
-                      helperText: 'Gemini可留空或默认；自建网关填写到/v1',
-                      border: OutlineInputBorder(),
-                    ),
+                    label: 'API Base URL',
+                    helper: 'Gemini可留空或默认；自建网关填写到/v1',
                   ),
                   const SizedBox(height: 16),
-                  TextFormField(
+                  _buildKeyField(
                     controller: _llmKeyCtrl,
-                    obscureText: _obscureLlmKey,
-                    decoration: InputDecoration(
-                      labelText: 'API Key',
-                      border: const OutlineInputBorder(),
-                      suffixIcon: IconButton(
-                        icon: Icon(_obscureLlmKey
-                            ? Icons.visibility_off
-                            : Icons.visibility),
-                        onPressed: () {
-                          setState(() {
-                            _obscureLlmKey = !_obscureLlmKey;
-                          });
-                        },
-                      ),
-                    ),
+                    label: 'LLM API Key',
+                    obscure: _obscureLlmKey,
+                    onToggleObscure: () {
+                      setState(() {
+                        _obscureLlmKey = !_obscureLlmKey;
+                      });
+                    },
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _llmModelCtrl,
-                    decoration: const InputDecoration(
+                    enableInteractiveSelection: true,
+                    decoration: InputDecoration(
                       labelText: '模型名称 (Model)',
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        tooltip: '从剪贴板粘贴模型名',
+                        icon: const Icon(Icons.paste_rounded),
+                        onPressed: () => _pasteTo(_llmModelCtrl, '模型名称'),
+                      ),
                     ),
                   ),
                 ],
@@ -225,39 +328,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     onChanged: _onImgTypeChanged,
                   ),
                   const SizedBox(height: 16),
-                  TextFormField(
+                  _buildUrlField(
                     controller: _imgUrlCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'API Base URL',
-                      helperText: 'Google 原生可留空；OpenAI 兼容填网关地址',
-                      border: OutlineInputBorder(),
-                    ),
+                    label: '生图 API Base URL',
+                    helper: 'Google 原生可留空；OpenAI 兼容填网关地址',
                   ),
                   const SizedBox(height: 16),
-                  TextFormField(
+                  _buildKeyField(
                     controller: _imgKeyCtrl,
-                    obscureText: _obscureImgKey,
-                    decoration: InputDecoration(
-                      labelText: 'API Key',
-                      border: const OutlineInputBorder(),
-                      suffixIcon: IconButton(
-                        icon: Icon(_obscureImgKey
-                            ? Icons.visibility_off
-                            : Icons.visibility),
-                        onPressed: () {
-                          setState(() {
-                            _obscureImgKey = !_obscureImgKey;
-                          });
-                        },
-                      ),
-                    ),
+                    label: '生图 API Key',
+                    obscure: _obscureImgKey,
+                    onToggleObscure: () {
+                      setState(() {
+                        _obscureImgKey = !_obscureImgKey;
+                      });
+                    },
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _imgModelCtrl,
-                    decoration: const InputDecoration(
+                    enableInteractiveSelection: true,
+                    decoration: InputDecoration(
                       labelText: '生图模型名称 (如 imagen-3.0-generate-002)',
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        tooltip: '从剪贴板粘贴模型名',
+                        icon: const Icon(Icons.paste_rounded),
+                        onPressed: () => _pasteTo(_imgModelCtrl, '生图模型名称'),
+                      ),
                     ),
                   ),
                 ],
@@ -306,38 +404,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       },
                     ),
                     const SizedBox(height: 16),
-                    TextFormField(
+                    _buildUrlField(
                       controller: _fbImgUrlCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '备用 API Base URL',
-                        border: OutlineInputBorder(),
-                      ),
+                      label: '备用 API Base URL',
+                      helper: '网关地址',
                     ),
                     const SizedBox(height: 16),
-                    TextFormField(
+                    _buildKeyField(
                       controller: _fbImgKeyCtrl,
-                      obscureText: _obscureFbImgKey,
-                      decoration: InputDecoration(
-                        labelText: '备用 API Key',
-                        border: const OutlineInputBorder(),
-                        suffixIcon: IconButton(
-                          icon: Icon(_obscureFbImgKey
-                              ? Icons.visibility_off
-                              : Icons.visibility),
-                          onPressed: () {
-                            setState(() {
-                              _obscureFbImgKey = !_obscureFbImgKey;
-                            });
-                          },
-                        ),
-                      ),
+                      label: '备用生图 API Key',
+                      obscure: _obscureFbImgKey,
+                      onToggleObscure: () {
+                        setState(() {
+                          _obscureFbImgKey = !_obscureFbImgKey;
+                        });
+                      },
                     ),
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _fbImgModelCtrl,
-                      decoration: const InputDecoration(
+                      enableInteractiveSelection: true,
+                      decoration: InputDecoration(
                         labelText: '备用生图模型名称',
-                        border: OutlineInputBorder(),
+                        border: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          tooltip: '从剪贴板粘贴模型名',
+                          icon: const Icon(Icons.paste_rounded),
+                          onPressed: () => _pasteTo(_fbImgModelCtrl, '备用生图模型名称'),
+                        ),
                       ),
                     ),
                   ],
