@@ -38,6 +38,23 @@ class PictureBook {
         createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
         protagonistRefImage: json['protagonistRefImage'],
       );
+
+  /// 已成功绘制的插画数量
+  int get completedIllustrationCount => pages
+      .where((p) => p.needIllustration && p.imageBase64 != null && p.imageBase64!.isNotEmpty)
+      .length;
+
+  /// 预期需要绘制的总插画数量
+  int get targetIllustrationCount => pages.where((p) => p.needIllustration).length;
+
+  /// 是否存在待绘制或未完成/失败的插画
+  bool get hasUnfinishedIllustrations =>
+      targetIllustrationCount > 0 && completedIllustrationCount < targetIllustrationCount;
+
+  /// 尚待绘制的页面列表
+  List<BookPageItem> get pendingIllustrationPages => pages
+      .where((p) => p.needIllustration && (p.imageBase64 == null || p.imageBase64!.isEmpty))
+      .toList();
 }
 
 class BookPageItem {
@@ -52,6 +69,8 @@ class BookPageItem {
   String? customInstruction;
   bool needIllustration; // 是否生成插画
   String? generationError; // 生图失败原因（如被安全策略拦截）
+  String? audioPath; // 本地朗读音频路径 (.mp3)
+  String? audioError; // 语音生成失败原因
 
   BookPageItem({
     required this.pageIndex,
@@ -65,6 +84,8 @@ class BookPageItem {
     this.customInstruction,
     this.needIllustration = true,
     this.generationError,
+    this.audioPath,
+    this.audioError,
   });
 
   Map<String, dynamic> toJson() => {
@@ -79,6 +100,8 @@ class BookPageItem {
         'customInstruction': customInstruction,
         'needIllustration': needIllustration,
         'generationError': generationError,
+        'audioPath': audioPath,
+        'audioError': audioError,
       };
 
   factory BookPageItem.fromJson(Map<String, dynamic> json) => BookPageItem(
@@ -93,6 +116,8 @@ class BookPageItem {
         customInstruction: json['customInstruction'],
         needIllustration: json['needIllustration'] ?? true,
         generationError: json['generationError'],
+        audioPath: json['audioPath'],
+        audioError: json['audioError'],
       );
 }
 

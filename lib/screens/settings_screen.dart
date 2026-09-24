@@ -28,9 +28,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _fbImgKeyCtrl;
   late TextEditingController _fbImgModelCtrl;
 
+  // MiniMax TTS Controllers
+  late TextEditingController _minimaxKeyCtrl;
+  late TextEditingController _minimaxGroupIdCtrl;
+  late TextEditingController _minimaxModelCtrl;
+  late TextEditingController _minimaxVoiceCtrl;
+  double _ttsSpeed = 0.85;
+
   bool _obscureLlmKey = true;
   bool _obscureImgKey = true;
   bool _obscureFbImgKey = true;
+  bool _obscureTtsKey = true;
 
   @override
   void initState() {
@@ -52,6 +60,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _fbImgKeyCtrl = TextEditingController(text: _settings.fallbackImageApiKey);
     _fbImgModelCtrl = TextEditingController(text: _settings.fallbackImageModel);
 
+    _minimaxKeyCtrl = TextEditingController(text: _settings.minimaxApiKey);
+    _minimaxGroupIdCtrl = TextEditingController(text: _settings.minimaxGroupId);
+    _minimaxModelCtrl = TextEditingController(text: _settings.minimaxModel);
+    _minimaxVoiceCtrl = TextEditingController(text: _settings.minimaxVoiceId);
+    _ttsSpeed = _settings.minimaxSpeed;
+
     setState(() {
       _loading = false;
     });
@@ -69,6 +83,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _settings.fallbackImageBaseUrl = _fbImgUrlCtrl.text.trim();
     _settings.fallbackImageApiKey = _fbImgKeyCtrl.text.trim();
     _settings.fallbackImageModel = _fbImgModelCtrl.text.trim();
+
+    _settings.minimaxApiKey = _minimaxKeyCtrl.text.trim();
+    _settings.minimaxGroupId = _minimaxGroupIdCtrl.text.trim();
+    _settings.minimaxModel = _minimaxModelCtrl.text.trim().isNotEmpty ? _minimaxModelCtrl.text.trim() : 'speech-01-turbo';
+    _settings.minimaxVoiceId = _minimaxVoiceCtrl.text.trim().isNotEmpty ? _minimaxVoiceCtrl.text.trim() : 'audiobook_female_1';
+    _settings.minimaxSpeed = _ttsSpeed;
 
     await _service.saveSettings(_settings);
     if (!mounted) return;
@@ -433,6 +453,160 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           onPressed: () => _pasteTo(_fbImgModelCtrl, '备用生图模型名称'),
                         ),
                       ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 20),
+              _buildSectionCard(
+                title: '🎙️ 绘本温柔语音朗读 (TTS - MiniMax)',
+                subtitle: '配置 MiniMax 故事语音大模型，为绘本每页生成温柔温润的睡前朗读声',
+                icon: Icons.record_voice_over_rounded,
+                children: [
+                  SwitchListTile(
+                    title: const Text('启用语音伴读功能'),
+                    subtitle: const Text('开启后阅读器支持一键播放、自动朗读与本地永久保存'),
+                    value: _settings.ttsEnabled,
+                    contentPadding: EdgeInsets.zero,
+                    onChanged: (val) {
+                      setState(() {
+                        _settings.ttsEnabled = val;
+                      });
+                    },
+                  ),
+                  if (_settings.ttsEnabled) ...[
+                    const SizedBox(height: 10),
+                    _buildKeyField(
+                      controller: _minimaxKeyCtrl,
+                      label: 'MiniMax API Key',
+                      obscure: _obscureTtsKey,
+                      onToggleObscure: () {
+                        setState(() {
+                          _obscureTtsKey = !_obscureTtsKey;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _minimaxGroupIdCtrl,
+                      enableInteractiveSelection: true,
+                      decoration: InputDecoration(
+                        labelText: 'MiniMax Group ID (组织ID)',
+                        helperText: '在 MiniMax 开放平台账户中心/API Keys 页面可查看',
+                        border: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          tooltip: '从剪贴板粘贴 Group ID',
+                          icon: const Icon(Icons.paste_rounded),
+                          onPressed: () => _pasteTo(_minimaxGroupIdCtrl, 'Group ID'),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<String>(
+                      value: ['speech-01-turbo', 'speech-02-turbo'].contains(_minimaxModelCtrl.text)
+                          ? _minimaxModelCtrl.text
+                          : 'speech-01-turbo',
+                      decoration: const InputDecoration(
+                        labelText: '语音模型版本',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'speech-01-turbo',
+                          child: Text('speech-01-turbo (故事朗读推荐 / 稳定温和)'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'speech-02-turbo',
+                          child: Text('speech-02-turbo (次时代拟真 / 情绪丰富)'),
+                        ),
+                      ],
+                      onChanged: (val) {
+                        if (val != null) {
+                          setState(() {
+                            _minimaxModelCtrl.text = val;
+                          });
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<String>(
+                      value: [
+                        'audiobook_female_1',
+                        'audiobook_female_2',
+                        'female-shaonv',
+                        'female-yujie',
+                        'presenter_female',
+                      ].contains(_minimaxVoiceCtrl.text)
+                          ? _minimaxVoiceCtrl.text
+                          : 'audiobook_female_1',
+                      decoration: const InputDecoration(
+                        labelText: '朗读音色预设',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'audiobook_female_1',
+                          child: Text('治愈暖心姐姐 (audiobook_female_1，儿童绘本首推)'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'audiobook_female_2',
+                          child: Text('温柔小姨/故事妈妈 (audiobook_female_2，睡前轻柔)'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'female-shaonv',
+                          child: Text('青涩甜美少女 (female-shaonv，轻快生动)'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'female-yujie',
+                          child: Text('知性温润御姐 (female-yujie)'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'presenter_female',
+                          child: Text('专业故事电台女主播 (presenter_female)'),
+                        ),
+                      ],
+                      onChanged: (val) {
+                        if (val != null) {
+                          setState(() {
+                            _minimaxVoiceCtrl.text = val;
+                          });
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('朗读语速 (Speed)：', style: TextStyle(fontWeight: FontWeight.bold)),
+                            Text(
+                              '${_ttsSpeed.toStringAsFixed(2)}x (${_ttsSpeed <= 0.85 ? "😴 适合睡前慢速" : "⚡ 正常语速"})',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.primary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Slider(
+                          value: _ttsSpeed,
+                          min: 0.70,
+                          max: 1.20,
+                          divisions: 10,
+                          label: '${_ttsSpeed.toStringAsFixed(2)}x',
+                          onChanged: (val) {
+                            setState(() {
+                              _ttsSpeed = val;
+                            });
+                          },
+                        ),
+                        Text(
+                          '提示：儿童睡前绘本推荐语速 0.80x ~ 0.85x，更具轻柔与催眠效果。',
+                          style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.outline),
+                        ),
+                      ],
                     ),
                   ],
                 ],
