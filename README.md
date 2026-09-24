@@ -5,6 +5,14 @@
 
 ---
 
+## 🖼️ 应用预览
+
+<div align="center">
+  <img src="assets/images/preview.png" alt="BookBuddy 客户端界面" width="800" style="border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.3);" />
+</div>
+
+---
+
 ## ✨ 核心特性
 
 - **多平台原生支持**：基于 Flutter 3 架构，一套代码覆盖 macOS、Windows、Android 平板、iOS 与 Web。
