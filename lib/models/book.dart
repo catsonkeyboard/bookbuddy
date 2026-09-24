@@ -42,14 +42,15 @@ class PictureBook {
 
 class BookPageItem {
   final int pageIndex;
-  final String text;
-  final String sceneAction;
-  final String sceneEmotion;
+  String text;
+  String sceneAction;
+  String sceneEmotion;
   String? rawPrompt; // 原生图提示词
   String? imageBase64;
   String? imagePath;
   bool isPlaceholder;
   String? customInstruction;
+  bool needIllustration; // 是否生成插画
 
   BookPageItem({
     required this.pageIndex,
@@ -61,6 +62,7 @@ class BookPageItem {
     this.imagePath,
     this.isPlaceholder = false,
     this.customInstruction,
+    this.needIllustration = true,
   });
 
   Map<String, dynamic> toJson() => {
@@ -73,6 +75,7 @@ class BookPageItem {
         'imagePath': imagePath,
         'isPlaceholder': isPlaceholder,
         'customInstruction': customInstruction,
+        'needIllustration': needIllustration,
       };
 
   factory BookPageItem.fromJson(Map<String, dynamic> json) => BookPageItem(
@@ -85,6 +88,7 @@ class BookPageItem {
         imagePath: json['imagePath'],
         isPlaceholder: json['isPlaceholder'] ?? false,
         customInstruction: json['customInstruction'],
+        needIllustration: json['needIllustration'] ?? true,
       );
 }
 
