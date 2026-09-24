@@ -7,6 +7,7 @@ import '../services/book_engine_service.dart';
 import '../services/book_storage_service.dart';
 import '../services/settings_service.dart';
 import 'book_reader_screen.dart';
+import 'storyboard_review_screen.dart';
 import 'tale_recommendation_dialog.dart';
 
 class CreateBookScreen extends StatefulWidget {
@@ -89,51 +90,19 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       }
 
       final style = StyleCatalog.styles.firstWhere((s) => s.id == _selectedStyleId);
-      String? protagonistRef;
-
-      // 逐页绘制插画
-      for (int i = 0; i < pages.length; i++) {
-        setState(() {
-          _statusText = '正在绘制插画：第 ${i + 1} / ${pages.length} 页 (${style.name})...';
-        });
-
-        if (settings.imageApiKey.isNotEmpty) {
-          try {
-            final b64 = await _engine.generateIllustration(
-              settings: settings,
-              style: style,
-              page: pages[i],
-              referenceImageBase64: protagonistRef,
-            );
-            pages[i].imageBase64 = b64;
-            // 锁定第一页成功生成的角色图作为全书的主角参考基准图
-            if (protagonistRef == null && b64 != null && b64.isNotEmpty) {
-              protagonistRef = b64;
-            }
-          } catch (e) {
-            pages[i].isPlaceholder = true;
-          }
-        } else {
-          pages[i].isPlaceholder = true;
-        }
-      }
-
-      final newBook = PictureBook(
-        id: const Uuid().v4().substring(0, 10),
-        title: finalTitle,
-        styleId: style.id,
-        styleName: style.name,
-        pages: pages,
-        createdAt: DateTime.now(),
-        protagonistRefImage: protagonistRef,
-      );
-
-      await _storage.saveBook(newBook);
 
       if (!mounted) return;
-      Navigator.pushReplacement(
+      // 成功获得分镜后，进入分镜审核确认页面（支持编辑正文、画面动作、微表情和开关插画）
+      Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => BookReaderScreen(book: newBook)),
+        MaterialPageRoute(
+          builder: (_) => StoryboardReviewScreen(
+            title: finalTitle,
+            style: style,
+            initialPages: pages,
+            settings: settings,
+          ),
+        ),
       );
     } catch (e) {
       if (mounted) {
@@ -180,7 +149,7 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                       const SizedBox(height: 24),
                       Text(_statusText, style: const TextStyle(fontSize: 16)),
                       const SizedBox(height: 8),
-                      const Text('正在全自动跨平台绘制中，完成后将自动进入阅读器', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      const Text('正在智能分镜与镜头场景重构中，完成后将进入分镜审核确认页面', style: TextStyle(fontSize: 12, color: Colors.grey)),
                     ],
                   ),
                 )
@@ -228,7 +197,7 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                       ),
                       onPressed: _startGenerate,
                       icon: const Icon(Icons.auto_awesome),
-                      label: const Text('🎬 开始全自动制作绘本', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      label: const Text('🎬 分析故事并生成分镜 (进入审核)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                     ),
                   ],
                 ),
