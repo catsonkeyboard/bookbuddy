@@ -49,10 +49,10 @@ fi
 
 echo -e "${GREEN}✓ Flutter 环境就绪: $(flutter --version | head -n 1)${NC}"
 
-# 3. 确定构建模式与日志级别
+# 3. 确定构建模式与日志级别 (默认直接开启实时详细输出，告别死机假象)
 BUILD_MODE="debug"
 BUILD_MODE_DISPLAY="DEBUG"
-VERBOSE_FLAG=""
+VERBOSE_FLAG="--verbose"
 
 for arg in "$@"; do
     case "$arg" in
@@ -60,15 +60,16 @@ for arg in "$@"; do
             BUILD_MODE="release"
             BUILD_MODE_DISPLAY="RELEASE"
             ;;
-        --verbose|-v)
-            VERBOSE_FLAG="--verbose"
+        --quiet|-q)
+            VERBOSE_FLAG=""
             ;;
     esac
 done
 
 echo -e "\n${YELLOW}📦 准备构建模式: [${BUILD_MODE_DISPLAY}]${NC}"
 if [ -n "$VERBOSE_FLAG" ]; then
-    echo -e "${BLUE}🔍 详细日志输出模式已启用 (Verbose Mode)${NC}"
+    echo -e "${BLUE}🔍 实时进度模式已默认开启 (每一步构建日志实时滚动，绝不卡顿黑屏)${NC}"
+    echo -e "${BLUE}   (若需静默输出，可传入 -q 或 --quiet 参数)${NC}"
 fi
 
 # 4. 获取依赖
@@ -77,7 +78,7 @@ flutter pub get
 
 # 5. 执行打包构建 (针对 Redmi Pad 等现代 Android 设备，精准编译 64 位 arm64 架构，编译速度提升数倍且体积减半)
 echo -e "\n${YELLOW}🚀 正在编译 Android ARM64 APK (目标平台: android-arm64)...${NC}"
-echo -e "${BLUE}💡 小贴士: 如果看到停在 'Running Gradle task...'，其实后厨正在拼命编译 C++/NDK 和打包，耐心等 1~2 分钟即可。想要实时看每一行编译流水账可加参数: ./build_apk.sh -v${NC}\n"
+echo -e "${GREEN}⚡ 实时编译输出流已启动，各项任务进度将直接滚动打印在下方：${NC}\n"
 
 if [ "$BUILD_MODE" = "release" ]; then
     flutter build apk --release --target-platform android-arm64 $VERBOSE_FLAG
