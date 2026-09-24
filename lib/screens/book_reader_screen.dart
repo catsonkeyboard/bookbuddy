@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import '../models/app_settings.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../models/book.dart';
 import '../models/style_catalog.dart';
 import '../services/book_engine_service.dart';
 import '../services/book_storage_service.dart';
 import '../services/settings_service.dart';
+import '../services/tts_service.dart';
 
 class BookReaderScreen extends StatefulWidget {
   final PictureBook book;
@@ -21,21 +22,159 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   int _currentPage = 0;
   bool _isRegenerating = false;
 
+  // TTS 与音频播放相关状态
   final BookEngineService _engine = BookEngineService();
   final BookStorageService _storage = BookStorageService();
   final SettingsService _settingsService = SettingsService();
+  final TtsService _ttsService = TtsService();
+
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  PlayerState _playerState = PlayerState.stopped;
+  bool _isAudioSynthesizing = false;
+  bool _autoPlayNext = false; // 是否朗读完自动翻下一页
+
+  bool get _isPlaying => _playerState == PlayerState.playing;
 
   @override
   void initState() {
     super.initState();
     _book = widget.book;
     _pageController = PageController();
+
+    _audioPlayer.onPlayerStateChanged.listen((state) {
+      if (mounted) {
+        setState(() => _playerState = state);
+      }
+    });
+
+    _audioPlayer.onPlayerComplete.listen((event) {
+      if (mounted) {
+        setState(() => _playerState = PlayerState.completed);
+        _handleAudioCompleted();
+      }
+    });
   }
 
   @override
   void dispose() {
+    _audioPlayer.stop();
+    _audioPlayer.dispose();
     _pageController.dispose();
     super.dispose();
+  }
+
+  /// 朗读完成事件处理（支持翻页连读）
+  void _handleAudioCompleted() {
+    if (_autoPlayNext && _currentPage < _book.pages.length - 1) {
+      Future.delayed(const Duration(milliseconds: 600), () {
+        if (!mounted) return;
+        _pageController.nextPage(
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeInOut,
+        );
+      });
+    }
+  }
+
+  /// 播放或暂停当前页朗读（优先使用本地已缓存音频，未生成则请求 MiniMax 并保存）
+  Future<void> _togglePlayCurrentPage({bool forceRegen = false}) async {
+    // 如果正在播放且未要求强制重成，点击直接暂停
+    if (_isPlaying && !forceRegen) {
+      await _audioPlayer.pause();
+      return;
+    }
+
+    // 如果处于暂停状态，恢复播放
+    if (_playerState == PlayerState.paused && !forceRegen) {
+      await _audioPlayer.resume();
+      return;
+    }
+
+    final curPage = _book.pages[_currentPage];
+
+    // 检查本地是否已有音频文件
+    final hasCache = await _ttsService.hasCachedAudio(
+      bookId: _book.id,
+      pageIndex: _currentPage,
+      knownPath: curPage.audioPath,
+    );
+
+    if (hasCache && !forceRegen) {
+      final audioPath = curPage.audioPath ??
+          await _ttsService.getLocalAudioPath(bookId: _book.id, pageIndex: _currentPage);
+      curPage.audioPath = audioPath;
+      await _audioPlayer.stop();
+      await _audioPlayer.play(DeviceFileSource(audioPath));
+      return;
+    }
+
+    // 本地未缓存或要求强制重新生成，调用 MiniMax 接口合成
+    final settings = await _settingsService.loadSettings();
+    if (!settings.ttsEnabled) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('⚠️ 语音朗读功能未开启，请先在设置中启用')),
+        );
+      }
+      return;
+    }
+
+    if (settings.minimaxApiKey.trim().isEmpty || settings.minimaxGroupId.trim().isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ 请先前往【设置 -> 绘本语音朗读】配置 MiniMax API Key 与 Group ID'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() => _isAudioSynthesizing = true);
+    try {
+      final savedAudioPath = await _ttsService.synthesizePageAudio(
+        bookId: _book.id,
+        pageIndex: _currentPage,
+        text: curPage.text,
+        settings: settings,
+        forceRefresh: forceRegen,
+      );
+
+      curPage.audioPath = savedAudioPath;
+      curPage.audioError = null;
+
+      // 持久化保存到绘本数据中，下次打开即用
+      await _storage.saveBook(_book);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              forceRegen ? '🎉 第 ${_currentPage + 1} 页语音已重新生成并已永久保存在本地！' : '🎉 第 ${_currentPage + 1} 页语音生成完毕，已永久保存在本地！',
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        await _audioPlayer.stop();
+        await _audioPlayer.play(DeviceFileSource(savedAudioPath));
+      }
+    } catch (e) {
+      curPage.audioError = e.toString();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('语音生成失败: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isAudioSynthesizing = false);
+      }
+    }
   }
 
   void _openRegenDialog() {
@@ -192,16 +331,81 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   @override
   Widget build(BuildContext context) {
     final total = _book.pages.length;
+    final curPage = _book.pages[_currentPage];
+    final hasAudioCache = curPage.audioPath != null && curPage.audioPath!.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
         title: Text('📖 ${_book.title}'),
         actions: [
+          // 1. 自动连读切换
+          Tooltip(
+            message: _autoPlayNext ? '自动翻页连读：已开启' : '自动翻页连读：已关闭',
+            child: TextButton.icon(
+              style: TextButton.styleFrom(
+                foregroundColor: _autoPlayNext ? const Color(0xFFD8A24A) : Colors.grey,
+              ),
+              icon: Icon(
+                _autoPlayNext ? Icons.autorenew_rounded : Icons.sync_disabled_rounded,
+                size: 18,
+              ),
+              label: Text(
+                _autoPlayNext ? '连读开' : '连读关',
+                style: const TextStyle(fontSize: 12),
+              ),
+              onPressed: () {
+                setState(() => _autoPlayNext = !_autoPlayNext);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(_autoPlayNext ? '✅ 已开启：读完当前页将自动翻至下一页' : '已关闭自动翻页连读'),
+                    duration: const Duration(seconds: 1),
+                  ),
+                );
+              },
+            ),
+          ),
+
+          // 2. 重新生成本页语音按钮
+          IconButton(
+            tooltip: '重新使用 MiniMax 合成本页语音并覆盖',
+            icon: const Icon(Icons.record_voice_over_outlined),
+            onPressed: (_isAudioSynthesizing || _isRegenerating)
+                ? null
+                : () => _togglePlayCurrentPage(forceRegen: true),
+          ),
+
+          // 3. 核心朗读播放 / 暂停按钮
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: _isAudioSynthesizing
+                ? const SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: Center(
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2.2),
+                      ),
+                    ),
+                  )
+                : IconButton.filledTonal(
+                    tooltip: _isPlaying ? '暂停朗读' : (hasAudioCache ? '播放本地温柔朗读' : '一键合成温柔朗读'),
+                    icon: Icon(
+                      _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                      color: _isPlaying ? Colors.amber : null,
+                    ),
+                    onPressed: _isRegenerating ? null : () => _togglePlayCurrentPage(),
+                  ),
+          ),
+
+          // 4. 重绘插画按钮
           IconButton(
             tooltip: '修改说明并重绘当前页插画',
             icon: const Icon(Icons.brush),
             onPressed: _isRegenerating ? null : _openRegenDialog,
           ),
+          const SizedBox(width: 8),
         ],
       ),
       body: Stack(
@@ -209,17 +413,25 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
           PageView.builder(
             controller: _pageController,
             itemCount: total,
-            onPageChanged: (i) => setState(() => _currentPage = i),
+            onPageChanged: (i) async {
+              await _audioPlayer.stop();
+              setState(() => _currentPage = i);
+              if (_autoPlayNext) {
+                _togglePlayCurrentPage();
+              }
+            },
             itemBuilder: (context, index) {
               final page = _book.pages[index];
+              final isPageCached = page.audioPath != null && page.audioPath!.isNotEmpty;
+
               return Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 880),
                   child: Card(
-                    margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+                    margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     child: Padding(
-                      padding: const EdgeInsets.all(24.0),
+                      padding: const EdgeInsets.all(20.0),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
@@ -268,14 +480,52 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                     ),
                             ),
                           ),
-                          const SizedBox(height: 20),
+                          const SizedBox(height: 16),
                           Expanded(
                             flex: 2,
-                            child: SingleChildScrollView(
-                              child: Text(
-                                page.text,
-                                style: const TextStyle(fontSize: 18, height: 1.8),
-                              ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: SingleChildScrollView(
+                                    child: Text(
+                                      page.text,
+                                      style: const TextStyle(fontSize: 18, height: 1.8),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                // 音频状态小横条
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        isPageCached ? Icons.offline_pin_rounded : Icons.cloud_download_outlined,
+                                        size: 15,
+                                        color: isPageCached ? Colors.green : Colors.grey,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          isPageCached
+                                              ? '本地已缓存人声（永久保存，离线即播，零网络消耗）'
+                                              : '尚未生成本页人声，点击上方播放按钮即可使用 MiniMax 自动生成并保存',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: isPageCached ? Colors.green : Colors.grey,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ],
@@ -297,6 +547,37 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                     SizedBox(height: 16),
                     Text('正在重绘当前页插画，请稍候...', style: TextStyle(color: Colors.white)),
                   ],
+                ),
+              ),
+            ),
+          if (_isAudioSynthesizing)
+            Positioned(
+              top: 16,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10)],
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFD8A24A)),
+                      ),
+                      SizedBox(width: 10),
+                      Text(
+                        '🎙️ 正在使用 MiniMax 生成温柔人声并落盘中...',
+                        style: TextStyle(color: Colors.white, fontSize: 13),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

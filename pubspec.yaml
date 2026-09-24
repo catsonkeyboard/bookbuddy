@@ -39,6 +39,9 @@ dependencies:
   flutter_secure_storage: ^11.2.0
   uuid: ^4.6.0
   intl: ^0.20.3
+  path_provider: ^2.1.5
+  audioplayers: ^6.1.1
+  wakelock_plus: ^1.2.8
 
 dev_dependencies:
   flutter_test:

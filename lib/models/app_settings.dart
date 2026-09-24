@@ -18,6 +18,15 @@ class AppSettings {
   String fallbackImageApiKey;
   String fallbackImageModel;
 
+  // 语音合成配置 (TTS - MiniMax)
+  bool ttsEnabled;
+  String ttsProvider; // minimax
+  String minimaxApiKey;
+  String minimaxGroupId;
+  String minimaxModel;
+  String minimaxVoiceId;
+  double minimaxSpeed;
+
   AppSettings({
     this.llmType = 'gemini',
     this.llmBaseUrl = 'https://generativelanguage.googleapis.com',
@@ -32,6 +41,13 @@ class AppSettings {
     this.fallbackImageBaseUrl = 'https://api.openai.com/v1',
     this.fallbackImageApiKey = '',
     this.fallbackImageModel = 'dall-e-3',
+    this.ttsEnabled = true,
+    this.ttsProvider = 'minimax',
+    this.minimaxApiKey = '',
+    this.minimaxGroupId = '',
+    this.minimaxModel = 'speech-01-turbo',
+    this.minimaxVoiceId = 'audiobook_female_1',
+    this.minimaxSpeed = 0.85,
   });
 
   Map<String, dynamic> toJson() => {
@@ -48,6 +64,13 @@ class AppSettings {
         'fallbackImageBaseUrl': fallbackImageBaseUrl,
         'fallbackImageApiKey': fallbackImageApiKey,
         'fallbackImageModel': fallbackImageModel,
+        'ttsEnabled': ttsEnabled,
+        'ttsProvider': ttsProvider,
+        'minimaxApiKey': minimaxApiKey,
+        'minimaxGroupId': minimaxGroupId,
+        'minimaxModel': minimaxModel,
+        'minimaxVoiceId': minimaxVoiceId,
+        'minimaxSpeed': minimaxSpeed,
       };
 
   factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
@@ -64,5 +87,12 @@ class AppSettings {
         fallbackImageBaseUrl: json['fallbackImageBaseUrl'] ?? 'https://api.openai.com/v1',
         fallbackImageApiKey: json['fallbackImageApiKey'] ?? '',
         fallbackImageModel: json['fallbackImageModel'] ?? 'dall-e-3',
+        ttsEnabled: json['ttsEnabled'] ?? true,
+        ttsProvider: json['ttsProvider'] ?? 'minimax',
+        minimaxApiKey: json['minimaxApiKey'] ?? '',
+        minimaxGroupId: json['minimaxGroupId'] ?? '',
+        minimaxModel: json['minimaxModel'] ?? 'speech-01-turbo',
+        minimaxVoiceId: json['minimaxVoiceId'] ?? 'audiobook_female_1',
+        minimaxSpeed: (json['minimaxSpeed'] as num?)?.toDouble() ?? 0.85,
       );
 }
