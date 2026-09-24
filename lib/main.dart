@@ -200,23 +200,58 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                 itemBuilder: (ctx, i) {
                                   final b = _books[i];
                                   final dateStr = DateFormat('yyyy-MM-dd HH:mm').format(b.createdAt);
+                                  final hasUnfinished = b.hasUnfinishedIllustrations;
+                                  final completedCount = b.completedIllustrationCount;
+                                  final targetCount = b.targetIllustrationCount;
+
                                   return Card(
                                     margin: const EdgeInsets.only(bottom: 12),
                                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                     child: ListTile(
                                       contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                                      leading: const CircleAvatar(
-                                        backgroundColor: Color(0xFF2F2920),
-                                        child: Icon(Icons.menu_book, color: Color(0xFFD8A24A)),
+                                      leading: CircleAvatar(
+                                        backgroundColor: hasUnfinished
+                                            ? Colors.orange.withOpacity(0.15)
+                                            : const Color(0xFF2F2920),
+                                        child: Icon(
+                                          hasUnfinished ? Icons.brush_outlined : Icons.menu_book,
+                                          color: hasUnfinished ? Colors.orange : const Color(0xFFD8A24A),
+                                        ),
                                       ),
-                                      title: Text(b.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                      title: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              b.title,
+                                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                          if (hasUnfinished) ...[
+                                            const SizedBox(width: 8),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                              decoration: BoxDecoration(
+                                                color: Colors.orange.withOpacity(0.2),
+                                                borderRadius: BorderRadius.circular(10),
+                                                border: Border.all(color: Colors.orange.withOpacity(0.4)),
+                                              ),
+                                              child: Text(
+                                                '待补画 ($completedCount/$targetCount)',
+                                                style: const TextStyle(fontSize: 11, color: Colors.orange, fontWeight: FontWeight.bold),
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
                                       subtitle: Text('$dateStr · ${b.pages.length} 页 · 画风: ${b.styleName}'),
                                       trailing: const Icon(Icons.chevron_right),
-                                      onTap: () {
-                                        Navigator.push(
+                                      onTap: () async {
+                                        await Navigator.push(
                                           context,
                                           MaterialPageRoute(builder: (_) => BookReaderScreen(book: b)),
                                         );
+                                        _loadBooks();
                                       },
                                     ),
                                   );
