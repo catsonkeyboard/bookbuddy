@@ -51,6 +51,7 @@ class BookPageItem {
   bool isPlaceholder;
   String? customInstruction;
   bool needIllustration; // 是否生成插画
+  String? generationError; // 生图失败原因（如被安全策略拦截）
 
   BookPageItem({
     required this.pageIndex,
@@ -63,6 +64,7 @@ class BookPageItem {
     this.isPlaceholder = false,
     this.customInstruction,
     this.needIllustration = true,
+    this.generationError,
   });
 
   Map<String, dynamic> toJson() => {
@@ -76,6 +78,7 @@ class BookPageItem {
         'isPlaceholder': isPlaceholder,
         'customInstruction': customInstruction,
         'needIllustration': needIllustration,
+        'generationError': generationError,
       };
 
   factory BookPageItem.fromJson(Map<String, dynamic> json) => BookPageItem(
@@ -89,6 +92,7 @@ class BookPageItem {
         isPlaceholder: json['isPlaceholder'] ?? false,
         customInstruction: json['customInstruction'],
         needIllustration: json['needIllustration'] ?? true,
+        generationError: json['generationError'],
       );
 }
 
