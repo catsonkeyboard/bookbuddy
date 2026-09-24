@@ -48,6 +48,18 @@ flutter run -d macos
 flutter run -d android
 ```
 
+### 📱 Android APK 一键打包
+
+项目根目录下提供了自动化打包脚本 `build_apk.sh`：
+
+```bash
+# 1. 默认一键打包 Debug APK (适合日常测试，完成后提示直接安装)
+./build_apk.sh
+
+# 2. 一键打包 Release 正式版 APK (体积更小，运行更流畅)
+./build_apk.sh release
+```
+
 ---
 
 ## ⚙️ 模型配置说明
