@@ -58,13 +58,13 @@ echo -e "\n${YELLOW}📦 准备构建模式: [${BUILD_MODE_DISPLAY}]${NC}"
 echo -e "\n${YELLOW}📥 正在同步 Flutter 依赖库...${NC}"
 flutter pub get
 
-# 5. 执行打包构建
-echo -e "\n${YELLOW}🚀 正在编译 Android APK，请稍候...${NC}"
+# 5. 执行打包构建 (针对 Redmi Pad 等现代 Android 设备，精准编译 64 位 arm64 架构，编译速度提升数倍且体积减半)
+echo -e "\n${YELLOW}🚀 正在编译 Android ARM64 APK (目标平台: android-arm64)，请稍候...${NC}"
 if [ "$BUILD_MODE" = "release" ]; then
-    flutter build apk --release
+    flutter build apk --release --target-platform android-arm64
     APK_PATH="$SCRIPT_DIR/build/app/outputs/flutter-apk/app-release.apk"
 else
-    flutter build apk --debug
+    flutter build apk --debug --target-platform android-arm64
     APK_PATH="$SCRIPT_DIR/build/app/outputs/flutter-apk/app-debug.apk"
 fi
 
