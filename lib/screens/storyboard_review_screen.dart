@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/app_settings.dart';
 import '../models/book.dart';
 import '../services/book_engine_service.dart';
@@ -29,6 +30,8 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
   bool _isGenerating = false;
   String _progressText = '';
   double _progressValue = 0.0;
+  String? _currentBookId;
+  String? _protagonistRef;
 
   final BookEngineService _engine = BookEngineService();
   final BookStorageService _storage = BookStorageService();
@@ -40,6 +43,14 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
     _pages = widget.initialPages
         .map((p) => BookPageItem.fromJson(p.toJson()))
         .toList();
+    _currentBookId = const Uuid().v4().substring(0, 10);
+  }
+
+  @override
+  void dispose() {
+    // 离开页面时确保释放屏幕常亮锁
+    WakelockPlus.disable();
+    super.dispose();
   }
 
   void _editPage(int index) {
@@ -146,15 +157,38 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
       return;
     }
 
+    final bookId = _currentBookId ?? const Uuid().v4().substring(0, 10);
+    _currentBookId = bookId;
+
     setState(() {
       _isGenerating = true;
-      _progressText = '准备开始绘制全书插画...';
+      _progressText = '正在激活屏幕常亮，准备开始绘制...';
       _progressValue = 0.0;
     });
 
+    // 1. 激活屏幕常亮，防止手机息屏休眠导致网络和进程被系统挂起
     try {
-      String? protagonistRef;
-      int doneCount = 0;
+      await WakelockPlus.enable();
+    } catch (_) {}
+
+    try {
+      // 2. 草稿预先落盘（保证哪怕遇到硬件强杀，分镜文本和基本信息绝不丢失）
+      var currentBook = PictureBook(
+        id: bookId,
+        title: widget.title,
+        styleId: widget.style.id,
+        styleName: widget.style.name,
+        pages: _pages,
+        createdAt: DateTime.now(),
+        protagonistRefImage: _protagonistRef,
+      );
+      await _storage.saveBook(currentBook);
+
+      // 计算还需要绘制的页数和已经完成的页数（支持断点续画）
+      int alreadyCompleted = _pages
+          .where((p) => p.needIllustration && p.imageBase64 != null && p.imageBase64!.isNotEmpty)
+          .length;
+      int doneCount = alreadyCompleted;
 
       for (int i = 0; i < _pages.length; i++) {
         final page = _pages[i];
@@ -163,11 +197,20 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
           continue;
         }
 
+        // 断点续画机制：如果本页已经成功生成过了，直接复用，不重复扣费/耗时
+        if (page.imageBase64 != null && page.imageBase64!.isNotEmpty) {
+          _protagonistRef ??= page.imageBase64;
+          continue;
+        }
+
         doneCount++;
-        setState(() {
-          _progressText = '正在绘制插画：第 ${i + 1} / ${_pages.length} 页 (${widget.style.name})...\n已完成 $doneCount / $activeCount';
-          _progressValue = doneCount / activeCount;
-        });
+        if (mounted) {
+          setState(() {
+            _progressText = '正在绘制插画：第 ${i + 1} / ${_pages.length} 页 (${widget.style.name})...\n'
+                '进度：$doneCount / $activeCount';
+            _progressValue = doneCount / activeCount;
+          });
+        }
 
         if (widget.settings.imageApiKey.isNotEmpty) {
           try {
@@ -175,13 +218,14 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
               settings: widget.settings,
               style: widget.style,
               page: page,
-              referenceImageBase64: protagonistRef,
+              referenceImageBase64: _protagonistRef,
             );
             page.imageBase64 = b64;
             page.generationError = null;
             // 锁定第一页成功生成的角色图作为全书的主角参考基准图
-            if (protagonistRef == null && b64 != null && b64.isNotEmpty) {
-              protagonistRef = b64;
+            if (_protagonistRef == null && b64 != null && b64.isNotEmpty) {
+              _protagonistRef = b64;
+              currentBook.protagonistRefImage = b64;
             }
           } catch (e) {
             page.isPlaceholder = true;
@@ -191,32 +235,34 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
           page.isPlaceholder = true;
           page.generationError = '未配置生图 API Key';
         }
+
+        // 3. 逐页实时落盘（每成功/完成一页立即保存一次，断网熄屏绝不丢进度！）
+        await _storage.saveBook(currentBook);
       }
 
-      final newBook = PictureBook(
-        id: const Uuid().v4().substring(0, 10),
-        title: widget.title,
-        styleId: widget.style.id,
-        styleName: widget.style.name,
-        pages: _pages,
-        createdAt: DateTime.now(),
-        protagonistRefImage: protagonistRef,
-      );
-
-      await _storage.saveBook(newBook);
+      // 4. 最终全书状态保存确认
+      await _storage.saveBook(currentBook);
 
       if (!mounted) return;
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => BookReaderScreen(book: newBook)),
+        MaterialPageRoute(builder: (_) => BookReaderScreen(book: currentBook)),
       );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('生成插画失败: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('生图中途遇到问题: $e\n已自动保存已绘制页面，可再次点击“继续绘制”'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 4),
+          ),
         );
       }
     } finally {
+      // 5. 无论是完成、异常还是中断，都必须释放屏幕常亮，保护用户电量
+      try {
+        await WakelockPlus.disable();
+      } catch (_) {}
       if (mounted) {
         setState(() => _isGenerating = false);
       }
@@ -226,6 +272,11 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
   @override
   Widget build(BuildContext context) {
     final activeCount = _pages.where((p) => p.needIllustration).length;
+    final completedCount = _pages
+        .where((p) => p.needIllustration && p.imageBase64 != null && p.imageBase64!.isNotEmpty)
+        .length;
+    final remainingCount = activeCount - completedCount;
+    final isResumeMode = completedCount > 0 && remainingCount > 0;
 
     return Scaffold(
       appBar: AppBar(
@@ -270,6 +321,26 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
                           color: const Color(0xFFD8A24A),
                           minHeight: 8,
                           borderRadius: BorderRadius.circular(4),
+                        ),
+                        const SizedBox(height: 20),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.06),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: const Color(0xFFD8A24A).withOpacity(0.3)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.lightbulb_outline, size: 16, color: Color(0xFFD8A24A)),
+                              SizedBox(width: 8),
+                              Text(
+                                '💡 已激活屏幕常亮保护 · 每页绘制实时自动保存',
+                                style: TextStyle(fontSize: 12, color: Colors.grey),
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -444,9 +515,20 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            '共 ${_pages.length} 幕 / 已开启 $activeCount 幅插画',
-                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                '共 ${_pages.length} 幕 / 已开启 $activeCount 幅插画',
+                                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                              ),
+                              if (completedCount > 0)
+                                Text(
+                                  '已完成 $completedCount 幅 · 待绘制 $remainingCount 幅',
+                                  style: const TextStyle(fontSize: 12, color: Color(0xFFD8A24A)),
+                                ),
+                            ],
                           ),
                           ElevatedButton.icon(
                             style: ElevatedButton.styleFrom(
@@ -455,9 +537,11 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
                               padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                             ),
-                            icon: const Icon(Icons.palette),
+                            icon: Icon(isResumeMode ? Icons.play_arrow : Icons.palette),
                             label: Text(
-                              '✅ 确认分镜，开始绘制 ($activeCount 张)',
+                              isResumeMode
+                                  ? '⏩ 继续绘制剩余 ($remainingCount 张)'
+                                  : '✅ 确认分镜，开始绘制 ($activeCount 张)',
                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                             ),
                             onPressed: _startDrawIllustrations,

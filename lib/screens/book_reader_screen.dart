@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../models/book.dart';
 import '../models/style_catalog.dart';
 import '../services/book_engine_service.dart';
@@ -21,6 +22,9 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   late PageController _pageController;
   int _currentPage = 0;
   bool _isRegenerating = false;
+  bool _isBatchDrawing = false;
+  String _batchProgressText = '';
+  double _batchProgressValue = 0.0;
 
   // TTS 与音频播放相关状态
   final BookEngineService _engine = BookEngineService();
@@ -57,6 +61,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
 
   @override
   void dispose() {
+    WakelockPlus.disable();
     _audioPlayer.stop();
     _audioPlayer.dispose();
     _pageController.dispose();
@@ -328,6 +333,96 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     }
   }
 
+  Future<void> _startBatchDrawMissing() async {
+    final pendingPages = _book.pendingIllustrationPages;
+    if (pendingPages.isEmpty) return;
+
+    final settings = await _settingsService.loadSettings();
+    if (settings.imageApiKey.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ 请先前往设置中配置生图 API Key'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    final style = StyleCatalog.styles.firstWhere(
+      (s) => s.id == _book.styleId,
+      orElse: () => StyleCatalog.styles.first,
+    );
+
+    setState(() {
+      _isBatchDrawing = true;
+      _batchProgressText = '正在激活屏幕常亮保护，准备补画插画...';
+      _batchProgressValue = 0.0;
+    });
+
+    try {
+      await WakelockPlus.enable();
+    } catch (_) {}
+
+    try {
+      int done = 0;
+      final totalToDraw = pendingPages.length;
+
+      for (var page in pendingPages) {
+        done++;
+        if (mounted) {
+          setState(() {
+            _batchProgressText = '正在补画：第 ${page.pageIndex + 1} 页 (${style.name})...\n'
+                '进度：$done / $totalToDraw';
+            _batchProgressValue = done / totalToDraw;
+          });
+        }
+
+        try {
+          final b64 = await _engine.generateIllustration(
+            settings: settings,
+            style: style,
+            page: page,
+            referenceImageBase64: _book.protagonistRefImage,
+          );
+          if (b64 != null && b64.isNotEmpty) {
+            page.imageBase64 = b64;
+            page.isPlaceholder = false;
+            page.generationError = null;
+            _book.protagonistRefImage ??= b64;
+          }
+        } catch (e) {
+          page.isPlaceholder = true;
+          page.generationError = e.toString();
+        }
+
+        // 逐页实时落盘保存在本地
+        await _storage.saveBook(_book);
+        if (mounted) setState(() {});
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('🎉 批量补画流程已完成！')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('批量补画异常: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      try {
+        await WakelockPlus.disable();
+      } catch (_) {}
+      if (mounted) {
+        setState(() => _isBatchDrawing = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final total = _book.pages.length;
@@ -403,8 +498,27 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
           IconButton(
             tooltip: '修改说明并重绘当前页插画',
             icon: const Icon(Icons.brush),
-            onPressed: _isRegenerating ? null : _openRegenDialog,
+            onPressed: (_isRegenerating || _isBatchDrawing) ? null : _openRegenDialog,
           ),
+          // 5. 如果全书有尚未生成的插画，提供一键批量补画入口
+          if (_book.hasUnfinishedIllustrations)
+            Padding(
+              padding: const EdgeInsets.only(right: 6.0),
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFD8A24A),
+                  foregroundColor: Colors.black87,
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                ),
+                icon: const Icon(Icons.palette_outlined, size: 16),
+                label: Text(
+                  '补画剩余(${_book.pendingIllustrationPages.length})',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+                onPressed: (_isBatchDrawing || _isRegenerating) ? null : _startBatchDrawMissing,
+              ),
+            ),
           const SizedBox(width: 8),
         ],
       ),
@@ -536,6 +650,58 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
               );
             },
           ),
+          if (_isBatchDrawing)
+            Container(
+              color: Colors.black87,
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32.0),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 24),
+                      Text(
+                        _batchProgressText,
+                        style: const TextStyle(fontSize: 16, height: 1.5, color: Colors.white),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: 320,
+                        child: LinearProgressIndicator(
+                          value: _batchProgressValue,
+                          backgroundColor: Colors.white12,
+                          color: const Color(0xFFD8A24A),
+                          minHeight: 8,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: const Color(0xFFD8A24A).withOpacity(0.3)),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.lightbulb_outline, size: 16, color: Color(0xFFD8A24A)),
+                            SizedBox(width: 8),
+                            Text(
+                              '💡 屏幕常亮保护中 · 逐页绘制实时落盘',
+                              style: TextStyle(fontSize: 12, color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           if (_isRegenerating)
             Container(
               color: Colors.black54,
