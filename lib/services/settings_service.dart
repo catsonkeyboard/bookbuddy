@@ -1,6 +1,8 @@
 import 'dart:convert';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../models/app_settings.dart';
 
 class SettingsService {
@@ -15,6 +17,7 @@ class SettingsService {
   static const _backupFbImgKey = 'bk_fb_image_api_key';
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  bool _triedLegacyCleanup = false;
 
   Future<AppSettings> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
@@ -37,21 +40,27 @@ class SettingsService {
         final secSettings = AppSettings.fromJson(jsonDecode(secFull));
         // 将安全存储中的 profiles key 同步到设置中
         for (var p in secSettings.llmProfiles) {
-          final target = settings.llmProfiles.where((x) => x.id == p.id).firstOrNull;
-          if (target != null && p.apiKey.isNotEmpty) {
+          final target = settings.llmProfiles
+              .where((x) => x.id == p.id)
+              .firstOrNull;
+          if (target != null && target.apiKey.isEmpty && p.apiKey.isNotEmpty) {
             target.apiKey = p.apiKey;
           }
         }
         for (var p in secSettings.imageProfiles) {
-          final target = settings.imageProfiles.where((x) => x.id == p.id).firstOrNull;
-          if (target != null && p.apiKey.isNotEmpty) {
+          final target = settings.imageProfiles
+              .where((x) => x.id == p.id)
+              .firstOrNull;
+          if (target != null && target.apiKey.isEmpty && p.apiKey.isNotEmpty) {
             target.apiKey = p.apiKey;
           }
         }
-        if (secSettings.fallbackImageApiKey.isNotEmpty) {
+        if (settings.fallbackImageApiKey.isEmpty &&
+            secSettings.fallbackImageApiKey.isNotEmpty) {
           settings.fallbackImageApiKey = secSettings.fallbackImageApiKey;
         }
-        if (secSettings.minimaxApiKey.isNotEmpty) {
+        if (settings.minimaxApiKey.isEmpty &&
+            secSettings.minimaxApiKey.isNotEmpty) {
           settings.minimaxApiKey = secSettings.minimaxApiKey;
         }
       }
@@ -97,29 +106,82 @@ class SettingsService {
       }
     }
 
+    // Upgrade older plaintext preferences only after the secure copy can be
+    // written. If secure storage is unavailable, retain the legacy fallback.
+    final hasLegacySecrets =
+        (raw != null && _containsSecrets(raw)) ||
+        [
+          _backupLlmKey,
+          _backupImgKey,
+          _backupFbImgKey,
+        ].any((key) => (prefs.getString(key)?.isNotEmpty ?? false));
+    if (hasLegacySecrets && !_triedLegacyCleanup) {
+      _triedLegacyCleanup = true;
+      try {
+        await saveSettings(settings);
+      } catch (_) {
+        // Keep serving settings even if cleanup cannot be completed yet.
+      }
+    }
     return settings;
+  }
+
+  bool _containsSecrets(String raw) {
+    try {
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      if ([
+        'llmApiKey',
+        'imageApiKey',
+        'fallbackImageApiKey',
+        'minimaxApiKey',
+      ].any((key) => (data[key] as String?)?.isNotEmpty ?? false)) {
+        return true;
+      }
+      for (final key in ['llmProfiles', 'imageProfiles']) {
+        final profiles = data[key];
+        if (profiles is List &&
+            profiles.any(
+              (profile) =>
+                  profile is Map &&
+                  (profile['apiKey'] as String?)?.isNotEmpty == true,
+            )) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
   }
 
   Future<void> saveSettings(AppSettings settings) async {
     final prefs = await SharedPreferences.getInstance();
 
     final jsonString = jsonEncode(settings.toJson());
-    await prefs.setString(_prefsKey, jsonString);
 
     // 尝试写入 Keychain / Keystore 安全硬件存储
     bool secureSuccess = true;
     try {
       await _secureStorage.write(key: _secureFullKey, value: jsonString);
       await _secureStorage.write(key: _secureLlmKey, value: settings.llmApiKey);
-      await _secureStorage.write(key: _secureImgKey, value: settings.imageApiKey);
       await _secureStorage.write(
-          key: _secureFbImgKey, value: settings.fallbackImageApiKey);
+        key: _secureImgKey,
+        value: settings.imageApiKey,
+      );
+      await _secureStorage.write(
+        key: _secureFbImgKey,
+        value: settings.fallbackImageApiKey,
+      );
     } catch (_) {
       secureSuccess = false;
     }
 
-    // 降级兜底：当在 macOS 本地未签名调试或沙箱 Entitlement 冲突时，安全存储写入本地隔离 prefs
-    if (!secureSuccess) {
+    if (secureSuccess) {
+      await prefs.setString(_prefsKey, jsonEncode(settings.toPublicJson()));
+      await prefs.remove(_backupLlmKey);
+      await prefs.remove(_backupImgKey);
+      await prefs.remove(_backupFbImgKey);
+    } else {
+      // Keep legacy settings usable on hosts where secure storage is unavailable.
+      await prefs.setString(_prefsKey, jsonString);
       await prefs.setString(_backupLlmKey, settings.llmApiKey);
       await prefs.setString(_backupImgKey, settings.imageApiKey);
       await prefs.setString(_backupFbImgKey, settings.fallbackImageApiKey);

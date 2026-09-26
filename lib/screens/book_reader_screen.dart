@@ -101,22 +101,16 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     final curPage = _book.pages[_currentPage];
 
     // 检查本地是否已有音频文件
-    final hasCache = await _ttsService.hasCachedAudio(
+    final cachedPath = await _ttsService.getCachedAudioPath(
       bookId: _book.id,
       pageIndex: _currentPage,
       knownPath: curPage.audioPath,
     );
 
-    if (hasCache && !forceRegen) {
-      final audioPath =
-          curPage.audioPath ??
-          await _ttsService.getLocalAudioPath(
-            bookId: _book.id,
-            pageIndex: _currentPage,
-          );
-      curPage.audioPath = audioPath;
+    if (cachedPath != null && !forceRegen) {
+      curPage.audioPath = cachedPath;
       await _audioPlayer.stop();
-      await _audioPlayer.play(DeviceFileSource(audioPath));
+      await _audioPlayer.play(DeviceFileSource(cachedPath));
       return;
     }
 
@@ -455,8 +449,12 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     String fullPromptOverride,
     String compositionOverride,
   ) async {
+    if (_isRegenerating || _isBatchDrawing) return;
     setState(() => _isRegenerating = true);
     try {
+      try {
+        await WakelockPlus.enable();
+      } catch (_) {}
       final settings = await _settingsService.loadSettings();
       final style = StyleCatalog.styles.firstWhere(
         (s) => s.id == _book.styleId,
@@ -485,7 +483,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
         characters: _book.characters,
       );
 
-      if (newB64 != null) {
+      if (newB64 != null && newB64.isNotEmpty) {
         page.imageBase64 = newB64;
         // 如果全书此前还没有基准主角图，将本次成功生成的图存为基准
         if (_book.characters.isEmpty &&
@@ -499,6 +497,8 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             SnackBar(content: Text('🎉 第 ${_currentPage + 1} 页插画已重新生成！')),
           );
         }
+      } else {
+        throw StateError('生图接口未返回图片');
       }
     } catch (e) {
       if (mounted) {
@@ -507,6 +507,9 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
         );
       }
     } finally {
+      try {
+        await WakelockPlus.disable();
+      } catch (_) {}
       if (mounted) setState(() => _isRegenerating = false);
     }
   }
@@ -552,6 +555,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
         return;
       }
       int done = 0;
+      int failed = 0;
       final totalToDraw = pendingPages.length;
 
       for (var page in pendingPages) {
@@ -580,8 +584,11 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             page.isPlaceholder = false;
             page.generationError = null;
             if (_book.characters.isEmpty) _book.protagonistRefImage ??= b64;
+          } else {
+            throw StateError('生图接口未返回图片');
           }
         } catch (e) {
+          failed++;
           page.isPlaceholder = true;
           page.generationError = e.toString();
         }
@@ -592,8 +599,14 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('🎉 批量补画流程已完成！')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              failed == 0 ? '🎉 批量补画已完成！' : '补画结束，$failed 页失败，可稍后重试。',
+            ),
+            backgroundColor: failed == 0 ? null : Colors.orange,
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -827,7 +840,11 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                                 ),
                                                 foregroundColor: Colors.black87,
                                               ),
-                                              onPressed: _openRegenDialog,
+                                              onPressed:
+                                                  (_isRegenerating ||
+                                                      _isBatchDrawing)
+                                                  ? null
+                                                  : _openRegenDialog,
                                             ),
                                           ],
                                         ),

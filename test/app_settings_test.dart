@@ -3,6 +3,21 @@ import 'package:bookbuddy/models/app_settings.dart';
 import 'package:bookbuddy/services/book_engine_service.dart';
 
 void main() {
+  test('public settings omit API keys from every profile and provider', () {
+    final settings = AppSettings();
+    settings.llmProfiles[0].apiKey = 'llm-secret';
+    settings.llmProfiles[1].apiKey = 'other-llm-secret';
+    settings.imageProfiles[0].apiKey = 'image-secret';
+    settings.imageProfiles[1].apiKey = 'other-image-secret';
+    settings.fallbackImageApiKey = 'fallback-secret';
+    settings.minimaxApiKey = 'tts-secret';
+
+    final publicData = settings.toPublicJson();
+    expect(publicData.toString(), isNot(contains('secret')));
+    expect(AppSettings.fromJson(publicData).llmProfiles, hasLength(4));
+    expect(settings.llmProfiles[0].apiKey, 'llm-secret');
+  });
+
   group('AppSettings Multi-Profile Tests', () {
     test('Default profiles are initialized properly', () {
       final settings = AppSettings();

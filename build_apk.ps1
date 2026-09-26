@@ -7,12 +7,15 @@
     .\build_apk.ps1                 # 构建 Debug 版本 (默认)
     .\build_apk.ps1 -Release        # 构建 Release 版本
     .\build_apk.ps1 -Quiet          # 静默输出模式
+    .\build_apk.ps1 -Release -AndroidUserHome C:\path\to\old-android-home -NoInstall
 #>
 
 [CmdletBinding()]
 param (
     [switch]$Release,
-    [switch]$Quiet
+    [switch]$Quiet,
+    [switch]$NoInstall,
+    [string]$AndroidUserHome
 )
 
 $ErrorActionPreference = "Stop"
@@ -95,6 +98,36 @@ $buildModeUpper = $buildMode.ToUpper()
 
 Write-Host "`n📦 准备构建模式: [$buildModeUpper]" -ForegroundColor Yellow
 
+# Release 目前使用调试签名。提前核对旧设备证书，避免覆盖可升级的 APK。
+if ($AndroidUserHome) {
+    $env:ANDROID_USER_HOME = (Resolve-Path -LiteralPath $AndroidUserHome).Path
+}
+if ($Release) {
+    $expectedCertSha256 = "B93E2CFD4C299BC2823B316639FCD0DD42041321C60504891ABAEA7A8C3D13D0"
+    $signingHome = if ($env:ANDROID_USER_HOME) { $env:ANDROID_USER_HOME } else { Join-Path $env:USERPROFILE ".android" }
+    $keystore = Join-Path $signingHome "debug.keystore"
+    if (-not (Test-Path -LiteralPath $keystore -PathType Leaf)) {
+        throw "Release 签名密钥不存在: $keystore。请使用 -AndroidUserHome 指向包含旧 debug.keystore 的目录。"
+    }
+    $keytool = Join-Path $env:JAVA_HOME "bin\keytool.exe"
+    if (-not (Test-Path -LiteralPath $keytool -PathType Leaf)) {
+        throw "未找到 keytool: $keytool"
+    }
+    $signingReport = & $keytool -list -v -keystore $keystore -storepass android -alias androiddebugkey 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "无法读取 Release 签名证书: $keystore"
+    }
+    $fingerprintMatch = [regex]::Match(($signingReport -join "`n"), 'SHA256:\s*([0-9A-Fa-f:]+)')
+    if (-not $fingerprintMatch.Success) {
+        throw "无法从 keytool 输出识别 SHA-256 证书指纹。"
+    }
+    $actualCertSha256 = $fingerprintMatch.Groups[1].Value.Replace(":", "").ToUpperInvariant()
+    if ($actualCertSha256 -ne $expectedCertSha256) {
+        throw "Release 签名与已安装版本不一致（当前 $actualCertSha256，预期 $expectedCertSha256）。请使用旧电脑的 debug.keystore。"
+    }
+    Write-Host "✓ Release 签名证书与旧设备版本一致: $actualCertSha256" -ForegroundColor Green
+}
+
 # 4. 获取依赖
 Write-Host "`n📥 正在同步 Flutter 依赖库..." -ForegroundColor Yellow
 & flutter pub get
@@ -121,6 +154,24 @@ $apkPath = Join-Path $scriptDir "build\app\outputs\flutter-apk\app-$buildMode.ap
 
 # 6. 构建结果检查
 if (Test-Path $apkPath) {
+    if ($Release) {
+        $buildTools = Get-ChildItem -LiteralPath (Join-Path $env:ANDROID_HOME "build-tools") -Directory |
+            Sort-Object Name -Descending | Select-Object -First 1
+        $apksigner = if ($buildTools) { Join-Path $buildTools.FullName "apksigner.bat" } else { $null }
+        if (-not $apksigner -or -not (Test-Path -LiteralPath $apksigner -PathType Leaf)) {
+            throw "找不到 apksigner，无法核验 Release APK 的最终签名。"
+        }
+        $apkSigningReport = & $apksigner verify --print-certs $apkPath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Release APK 签名校验失败: $apkPath"
+        }
+        $apkFingerprintMatch = [regex]::Match(($apkSigningReport -join "`n"), 'certificate SHA-256 digest:\s*([0-9A-Fa-f]+)')
+        if (-not $apkFingerprintMatch.Success -or
+            $apkFingerprintMatch.Groups[1].Value.ToUpperInvariant() -ne $expectedCertSha256) {
+            throw "Release APK 最终证书与旧设备版本不一致: $apkPath"
+        }
+        Write-Host "✓ APK 最终签名已核验，可覆盖安装旧签名版本。" -ForegroundColor Green
+    }
     $fileItem = Get-Item $apkPath
     $fileSizeMB = "{0:N1} MB" -f ($fileItem.Length / 1MB)
 
@@ -132,7 +183,7 @@ if (Test-Path $apkPath) {
 
     # 7. 检测是否连接设备
     $adbCmd = Get-Command adb -ErrorAction SilentlyContinue
-    if ($adbCmd) {
+    if ($adbCmd -and -not $NoInstall) {
         $devices = (& adb devices | Where-Object { $_ -match "\tdevice$" })
         if ($devices -and $devices.Count -gt 0) {
             Write-Host "`n📱 检测到已有 $($devices.Count) 台 Android 设备/模拟器已连接！" -ForegroundColor Cyan
