@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'models/book.dart';
-import 'models/fairy_tale_catalog.dart';
 import 'screens/book_reader_screen.dart';
 import 'screens/create_book_screen.dart';
 import 'screens/settings_screen.dart';
