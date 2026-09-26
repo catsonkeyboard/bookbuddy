@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
 import '../models/style_catalog.dart';
 import '../services/book_engine_service.dart';
 import '../services/settings_service.dart';
@@ -53,16 +54,18 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
     final text = _textCtrl.text.trim();
 
     if (title.isEmpty && text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请输入故事标题或故事正文')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('请输入故事标题或故事正文')));
       return;
     }
 
     final settings = await _settingsService.loadSettings();
     if (settings.llmApiKey.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('⚠️ 请先点击右上角设置图标，填写 LLM API Key！'), backgroundColor: Colors.orange),
+        const SnackBar(
+          content: Text('⚠️ 请先点击右上角设置图标，填写 LLM API Key！'),
+          backgroundColor: Colors.orange,
+        ),
       );
       return;
     }
@@ -73,18 +76,22 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
     });
 
     try {
-      final finalTitle = title.isNotEmpty ? title : (text.length > 20 ? text.substring(0, 20) : text);
-      final pages = await _engine.createStoryboards(
+      final finalTitle = title.isNotEmpty
+          ? title
+          : (text.length > 20 ? text.substring(0, 20) : text);
+      final draft = await _engine.createStoryboardDraft(
         settings: settings,
         title: finalTitle,
         storyText: text.isNotEmpty ? text : finalTitle,
       );
 
-      if (pages.isEmpty) {
+      if (draft.pages.isEmpty) {
         throw Exception('大模型未能成功生成绘本分镜，请重试');
       }
 
-      final style = StyleCatalog.styles.firstWhere((s) => s.id == _selectedStyleId);
+      final style = StyleCatalog.styles.firstWhere(
+        (s) => s.id == _selectedStyleId,
+      );
 
       if (!mounted) return;
       // 成功获得分镜后，进入分镜审核确认页面（支持编辑正文、画面动作、微表情和开关插画）
@@ -94,7 +101,8 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
           builder: (_) => StoryboardReviewScreen(
             title: finalTitle,
             style: style,
-            initialPages: pages,
+            initialPages: draft.pages,
+            initialCharacters: draft.characters,
             settings: settings,
           ),
         ),
@@ -122,7 +130,10 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16),
             ),
             icon: const Text('🌟', style: TextStyle(fontSize: 16)),
-            label: const Text('挑选经典童话', style: TextStyle(fontWeight: FontWeight.bold)),
+            label: const Text(
+              '挑选经典童话',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
             onPressed: () async {
               await showDialog(
                 context: context,
@@ -144,7 +155,10 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                       const SizedBox(height: 24),
                       Text(_statusText, style: const TextStyle(fontSize: 16)),
                       const SizedBox(height: 8),
-                      const Text('正在智能分镜与镜头场景重构中，完成后将进入分镜审核确认页面', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      const Text(
+                        '正在智能分镜与镜头场景重构中，完成后将进入分镜审核确认页面',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
                     ],
                   ),
                 )
@@ -163,16 +177,31 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('📖 故事正文：', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                        const Text(
+                          '📖 故事正文：',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                         Row(
                           children: [
                             TextButton.icon(
-                              style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                              ),
                               icon: const Icon(Icons.paste_rounded, size: 16),
-                              label: const Text('从剪贴板粘贴', style: TextStyle(fontSize: 12)),
+                              label: const Text(
+                                '从剪贴板粘贴',
+                                style: TextStyle(fontSize: 12),
+                              ),
                               onPressed: () async {
-                                final data = await Clipboard.getData(Clipboard.kTextPlain);
-                                if (data != null && data.text != null && data.text!.isNotEmpty) {
+                                final data = await Clipboard.getData(
+                                  Clipboard.kTextPlain,
+                                );
+                                if (data != null &&
+                                    data.text != null &&
+                                    data.text!.isNotEmpty) {
                                   setState(() {
                                     _textCtrl.text = data.text!.trim();
                                   });
@@ -180,9 +209,14 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                               },
                             ),
                             TextButton.icon(
-                              style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                              ),
                               icon: const Icon(Icons.clear, size: 16),
-                              label: const Text('清空', style: TextStyle(fontSize: 12)),
+                              label: const Text(
+                                '清空',
+                                style: TextStyle(fontSize: 12),
+                              ),
                               onPressed: () => _textCtrl.clear(),
                             ),
                           ],
@@ -201,7 +235,13 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                       ),
                     ),
                     const SizedBox(height: 24),
-                    const Text('🎨 选择绘本画风', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    const Text(
+                      '🎨 选择绘本画风',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                     const SizedBox(height: 12),
                     Wrap(
                       spacing: 12,
@@ -211,7 +251,8 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                         return ChoiceChip(
                           label: Text(st.name),
                           selected: isSel,
-                          onSelected: (_) => setState(() => _selectedStyleId = st.id),
+                          onSelected: (_) =>
+                              setState(() => _selectedStyleId = st.id),
                         );
                       }).toList(),
                     ),
@@ -219,11 +260,19 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
                       onPressed: _startGenerate,
                       icon: const Icon(Icons.auto_awesome),
-                      label: const Text('🎬 分析故事并生成分镜 (进入审核)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      label: const Text(
+                        '🎬 分析故事并生成分镜 (进入审核)',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
                   ],
                 ),
