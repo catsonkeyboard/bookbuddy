@@ -1,13 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:uuid/uuid.dart';
-import '../models/book.dart';
 import '../models/style_catalog.dart';
-import '../models/fairy_tale_catalog.dart';
 import '../services/book_engine_service.dart';
-import '../services/book_storage_service.dart';
 import '../services/settings_service.dart';
-import 'book_reader_screen.dart';
 import 'storyboard_review_screen.dart';
 import 'tale_recommendation_dialog.dart';
 
@@ -37,7 +32,6 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
 
   final BookEngineService _engine = BookEngineService();
   final SettingsService _settingsService = SettingsService();
-  final BookStorageService _storage = BookStorageService();
 
   @override
   void initState() {
