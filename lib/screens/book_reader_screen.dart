@@ -1,8 +1,11 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+
 import '../models/book.dart';
+import '../models/app_settings.dart';
 import '../models/style_catalog.dart';
 import '../services/book_engine_service.dart';
 import '../services/book_storage_service.dart';
@@ -105,8 +108,12 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     );
 
     if (hasCache && !forceRegen) {
-      final audioPath = curPage.audioPath ??
-          await _ttsService.getLocalAudioPath(bookId: _book.id, pageIndex: _currentPage);
+      final audioPath =
+          curPage.audioPath ??
+          await _ttsService.getLocalAudioPath(
+            bookId: _book.id,
+            pageIndex: _currentPage,
+          );
       curPage.audioPath = audioPath;
       await _audioPlayer.stop();
       await _audioPlayer.play(DeviceFileSource(audioPath));
@@ -117,14 +124,15 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     final settings = await _settingsService.loadSettings();
     if (!settings.ttsEnabled) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('⚠️ 语音朗读功能未开启，请先在设置中启用')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('⚠️ 语音朗读功能未开启，请先在设置中启用')));
       }
       return;
     }
 
-    if (settings.minimaxApiKey.trim().isEmpty || settings.minimaxGroupId.trim().isEmpty) {
+    if (settings.minimaxApiKey.trim().isEmpty ||
+        settings.minimaxGroupId.trim().isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -156,7 +164,9 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              forceRegen ? '🎉 第 ${_currentPage + 1} 页语音已重新生成并已永久保存在本地！' : '🎉 第 ${_currentPage + 1} 页语音生成完毕，已永久保存在本地！',
+              forceRegen
+                  ? '🎉 第 ${_currentPage + 1} 页语音已重新生成并已永久保存在本地！'
+                  : '🎉 第 ${_currentPage + 1} 页语音生成完毕，已永久保存在本地！',
             ),
             duration: const Duration(seconds: 2),
           ),
@@ -190,11 +200,15 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     );
 
     // 默认展示原生图提示词（如果有记录则用已保存的，否则按公式实时组装）
-    final initialPrompt = curItem.rawPrompt != null && curItem.rawPrompt!.isNotEmpty
+    final initialPrompt =
+        curItem.rawPrompt != null && curItem.rawPrompt!.isNotEmpty
         ? curItem.rawPrompt!
         : _engine.buildDefaultPrompt(style: style, page: curItem);
 
     final promptCtrl = TextEditingController(text: initialPrompt);
+    final compositionCtrl = TextEditingController(
+      text: curItem.sceneComposition,
+    );
 
     showDialog(
       context: context,
@@ -212,18 +226,33 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    color: Theme.of(context)
+                        .colorScheme
+                        .surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Theme.of(context).colorScheme.outline.withOpacity(0.3)),
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.outline
+                          .withOpacity(0.3),
+                    ),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Row(
                         children: [
-                          Icon(Icons.menu_book, size: 16, color: Color(0xFFD8A24A)),
+                          Icon(
+                            Icons.menu_book,
+                            size: 16,
+                            color: Color(0xFFD8A24A),
+                          ),
                           SizedBox(width: 6),
-                          Text('📖 当前页故事文本：', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          Text(
+                            '📖 当前页故事文本：',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 6),
@@ -235,6 +264,20 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                   ),
                 ),
                 const SizedBox(height: 18),
+                const Text(
+                  '🧭 动作朝向与空间关系：',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                TextField(
+                  controller: compositionCtrl,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                    hintText: '如：大灰狼侧身面向草屋吹气，草屋在狼前方，侧面镜头',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
 
                 // 2. 原生图提示词（支持微调或清空重写）
                 Row(
@@ -242,10 +285,15 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                   children: [
                     const Text(
                       '🖼️ 生图提示词 (Prompt)：',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     TextButton.icon(
-                      style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
                       icon: const Icon(Icons.clear_all, size: 16),
                       label: const Text('清空重写', style: TextStyle(fontSize: 12)),
                       onPressed: () => promptCtrl.clear(),
@@ -264,9 +312,14 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  '💡 说明：支持直接在上方修改提示词细节，也可以全部删掉重新编写；点击重绘将直接使用上述提示词进行生成。',
+                  '💡 可修改本页场景提示词；重绘时会自动加入已保存的角色外貌、服装与定妆照。',
                   style: TextStyle(fontSize: 11, color: Colors.grey),
                 ),
+                if (curItem.imageModelUsed != null)
+                  Text(
+                    '上次模型：${curItem.imageModelUsed} · 角色参考图：${curItem.imageReferenceApplied ? '已传入' : '未传入'}',
+                    style: const TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
               ],
             ),
           ),
@@ -282,10 +335,13 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
               foregroundColor: Colors.black87,
             ),
             icon: const Icon(Icons.auto_awesome, size: 18),
-            label: const Text('🚀 立即重新生图', style: TextStyle(fontWeight: FontWeight.bold)),
+            label: const Text(
+              '🚀 立即重新生图',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
             onPressed: () {
               Navigator.pop(ctx);
-              _doRegen(promptCtrl.text.trim());
+              _doRegen(promptCtrl.text.trim(), compositionCtrl.text.trim());
             },
           ),
         ],
@@ -293,7 +349,112 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     );
   }
 
-  Future<void> _doRegen(String fullPromptOverride) async {
+  void _showCharacterReferences() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('角色设定与定妆照'),
+        content: SizedBox(
+          width: 620,
+          height: 460,
+          child: ListView(
+            children: [
+              for (final character in _book.characters)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 100,
+                          height: 120,
+                          child: character.referenceImageBase64 == null
+                              ? const Icon(Icons.person_outline, size: 48)
+                              : Image.memory(
+                                  base64Decode(character.referenceImageBase64!),
+                                  fit: BoxFit.contain,
+                                ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                character.name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              if (character.species.isNotEmpty)
+                                Text('物种：${character.species}'),
+                              Text('固定外貌：${character.appearance}'),
+                              Text('默认服装：${character.defaultOutfit}'),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 中断后从草稿续画时，先恢复缺失的角色定妆照并让用户查看。
+  Future<bool> _ensureCharacterReferences({
+    required AppSettings settings,
+    required BookStyle style,
+    required Iterable<BookPageItem> pages,
+  }) async {
+    if (!_engine.supportsCharacterReference(
+      type: settings.imageType,
+      baseUrl: settings.imageBaseUrl,
+      model: settings.imageModel,
+    )) {
+      return true;
+    }
+    final ids = pages.expand((page) => page.characterIds).toSet();
+    final missing = _book.characters
+        .where((c) => ids.contains(c.id) && c.referenceImageBase64 == null)
+        .toList();
+    if (missing.isEmpty) return true;
+    for (final character in missing) {
+      final image = await _engine.generateCharacterReference(
+        settings: settings,
+        style: style,
+        character: character,
+      );
+      if (image == null || image.isEmpty) {
+        throw StateError('${character.name} 定妆照生成失败');
+      }
+      character.referenceImageBase64 = image;
+      await _storage.saveBook(_book);
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已补齐角色定妆照。请先查看角色设定，确认后再次点击重绘或补画。')),
+      );
+      setState(() {});
+    }
+    return false;
+  }
+
+  Future<void> _doRegen(
+    String fullPromptOverride,
+    String compositionOverride,
+  ) async {
     setState(() => _isRegenerating = true);
     try {
       final settings = await _settingsService.loadSettings();
@@ -303,18 +464,35 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
       );
 
       final page = _book.pages[_currentPage];
+      if (!await _ensureCharacterReferences(
+        settings: settings,
+        style: style,
+        pages: [page],
+      )) {
+        return;
+      }
+      page.sceneComposition = compositionOverride;
+      await _storage.saveBook(_book);
+      final oldImage = page.imageBase64;
       final newB64 = await _engine.generateIllustration(
         settings: settings,
         style: style,
         page: page,
         fullPromptOverride: fullPromptOverride,
-        referenceImageBase64: _book.protagonistRefImage, // 注入全书统一主角定妆照锁定外貌
+        referenceImageBase64: _book.characters.isEmpty
+            ? _book.protagonistRefImage
+            : null,
+        characters: _book.characters,
       );
 
       if (newB64 != null) {
         page.imageBase64 = newB64;
         // 如果全书此前还没有基准主角图，将本次成功生成的图存为基准
-        _book.protagonistRefImage ??= newB64;
+        if (_book.characters.isEmpty &&
+            (_book.protagonistRefImage == null ||
+                _book.protagonistRefImage == oldImage)) {
+          _book.protagonistRefImage = newB64;
+        }
         await _storage.saveBook(_book);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -366,6 +544,13 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     } catch (_) {}
 
     try {
+      if (!await _ensureCharacterReferences(
+        settings: settings,
+        style: style,
+        pages: pendingPages,
+      )) {
+        return;
+      }
       int done = 0;
       final totalToDraw = pendingPages.length;
 
@@ -373,7 +558,8 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
         done++;
         if (mounted) {
           setState(() {
-            _batchProgressText = '正在补画：第 ${page.pageIndex + 1} 页 (${style.name})...\n'
+            _batchProgressText =
+                '正在补画：第 ${page.pageIndex + 1} 页 (${style.name})...\n'
                 '进度：$done / $totalToDraw';
             _batchProgressValue = done / totalToDraw;
           });
@@ -384,13 +570,16 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             settings: settings,
             style: style,
             page: page,
-            referenceImageBase64: _book.protagonistRefImage,
+            referenceImageBase64: _book.characters.isEmpty
+                ? _book.protagonistRefImage
+                : null,
+            characters: _book.characters,
           );
           if (b64 != null && b64.isNotEmpty) {
             page.imageBase64 = b64;
             page.isPlaceholder = false;
             page.generationError = null;
-            _book.protagonistRefImage ??= b64;
+            if (_book.characters.isEmpty) _book.protagonistRefImage ??= b64;
           }
         } catch (e) {
           page.isPlaceholder = true;
@@ -403,9 +592,8 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('🎉 批量补画流程已完成！')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('🎉 批量补画流程已完成！')));
       }
     } catch (e) {
       if (mounted) {
@@ -427,21 +615,32 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   Widget build(BuildContext context) {
     final total = _book.pages.length;
     final curPage = _book.pages[_currentPage];
-    final hasAudioCache = curPage.audioPath != null && curPage.audioPath!.isNotEmpty;
+    final hasAudioCache =
+        curPage.audioPath != null && curPage.audioPath!.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
         title: Text('📖 ${_book.title}'),
         actions: [
+          if (_book.characters.isNotEmpty)
+            IconButton(
+              tooltip: '查看角色定妆照与固定设定',
+              icon: const Icon(Icons.people_outline),
+              onPressed: _showCharacterReferences,
+            ),
           // 1. 自动连读切换
           Tooltip(
             message: _autoPlayNext ? '自动翻页连读：已开启' : '自动翻页连读：已关闭',
             child: TextButton.icon(
               style: TextButton.styleFrom(
-                foregroundColor: _autoPlayNext ? const Color(0xFFD8A24A) : Colors.grey,
+                foregroundColor: _autoPlayNext
+                    ? const Color(0xFFD8A24A)
+                    : Colors.grey,
               ),
               icon: Icon(
-                _autoPlayNext ? Icons.autorenew_rounded : Icons.sync_disabled_rounded,
+                _autoPlayNext
+                    ? Icons.autorenew_rounded
+                    : Icons.sync_disabled_rounded,
                 size: 18,
               ),
               label: Text(
@@ -452,7 +651,9 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                 setState(() => _autoPlayNext = !_autoPlayNext);
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: Text(_autoPlayNext ? '✅ 已开启：读完当前页将自动翻至下一页' : '已关闭自动翻页连读'),
+                    content: Text(
+                      _autoPlayNext ? '✅ 已开启：读完当前页将自动翻至下一页' : '已关闭自动翻页连读',
+                    ),
                     duration: const Duration(seconds: 1),
                   ),
                 );
@@ -485,12 +686,18 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                     ),
                   )
                 : IconButton.filledTonal(
-                    tooltip: _isPlaying ? '暂停朗读' : (hasAudioCache ? '播放本地温柔朗读' : '一键合成温柔朗读'),
+                    tooltip: _isPlaying
+                        ? '暂停朗读'
+                        : (hasAudioCache ? '播放本地温柔朗读' : '一键合成温柔朗读'),
                     icon: Icon(
-                      _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                      _isPlaying
+                          ? Icons.pause_rounded
+                          : Icons.play_arrow_rounded,
                       color: _isPlaying ? Colors.amber : null,
                     ),
-                    onPressed: _isRegenerating ? null : () => _togglePlayCurrentPage(),
+                    onPressed: _isRegenerating
+                        ? null
+                        : () => _togglePlayCurrentPage(),
                   ),
           ),
 
@@ -498,7 +705,9 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
           IconButton(
             tooltip: '修改说明并重绘当前页插画',
             icon: const Icon(Icons.brush),
-            onPressed: (_isRegenerating || _isBatchDrawing) ? null : _openRegenDialog,
+            onPressed: (_isRegenerating || _isBatchDrawing)
+                ? null
+                : _openRegenDialog,
           ),
           // 5. 如果全书有尚未生成的插画，提供一键批量补画入口
           if (_book.hasUnfinishedIllustrations)
@@ -509,14 +718,22 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                   backgroundColor: const Color(0xFFD8A24A),
                   foregroundColor: Colors.black87,
                   visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 0,
+                  ),
                 ),
                 icon: const Icon(Icons.palette_outlined, size: 16),
                 label: Text(
                   '补画剩余(${_book.pendingIllustrationPages.length})',
-                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-                onPressed: (_isBatchDrawing || _isRegenerating) ? null : _startBatchDrawMissing,
+                onPressed: (_isBatchDrawing || _isRegenerating)
+                    ? null
+                    : _startBatchDrawMissing,
               ),
             ),
           const SizedBox(width: 8),
@@ -536,14 +753,20 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             },
             itemBuilder: (context, index) {
               final page = _book.pages[index];
-              final isPageCached = page.audioPath != null && page.audioPath!.isNotEmpty;
+              final isPageCached =
+                  page.audioPath != null && page.audioPath!.isNotEmpty;
 
               return Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 880),
                   child: Card(
-                    margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    margin: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 20,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
                     child: Padding(
                       padding: const EdgeInsets.all(20.0),
                       child: Column(
@@ -565,25 +788,43 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                         child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            const Icon(Icons.broken_image_outlined, size: 48, color: Colors.orangeAccent),
+                                            const Icon(
+                                              Icons.broken_image_outlined,
+                                              size: 48,
+                                              color: Colors.orangeAccent,
+                                            ),
                                             const SizedBox(height: 12),
-                                            const Text('⚠️ 插画未成功生成', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                            const Text(
+                                              '⚠️ 插画未成功生成',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 16,
+                                              ),
+                                            ),
                                             const SizedBox(height: 6),
                                             Text(
                                               page.generationError != null
                                                   ? '原因: ${page.generationError}'
                                                   : '可能是上游网络抖动或触发了安全内容拦截',
                                               textAlign: TextAlign.center,
-                                              style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                              style: const TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey,
+                                              ),
                                               maxLines: 3,
                                               overflow: TextOverflow.ellipsis,
                                             ),
                                             const SizedBox(height: 16),
                                             ElevatedButton.icon(
-                                              icon: const Icon(Icons.refresh, size: 16),
+                                              icon: const Icon(
+                                                Icons.refresh,
+                                                size: 16,
+                                              ),
                                               label: const Text('点击重新绘制本页'),
                                               style: ElevatedButton.styleFrom(
-                                                backgroundColor: const Color(0xFFD8A24A),
+                                                backgroundColor: const Color(
+                                                  0xFFD8A24A,
+                                                ),
                                                 foregroundColor: Colors.black87,
                                               ),
                                               onPressed: _openRegenDialog,
@@ -604,24 +845,37 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                   child: SingleChildScrollView(
                                     child: Text(
                                       page.text,
-                                      style: const TextStyle(fontSize: 18, height: 1.8),
+                                      style: const TextStyle(
+                                        fontSize: 18,
+                                        height: 1.8,
+                                      ),
                                     ),
                                   ),
                                 ),
                                 const SizedBox(height: 8),
                                 // 音频状态小横条
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
                                   decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .surfaceContainerHighest
+                                        .withOpacity(0.5),
                                     borderRadius: BorderRadius.circular(8),
                                   ),
                                   child: Row(
                                     children: [
                                       Icon(
-                                        isPageCached ? Icons.offline_pin_rounded : Icons.cloud_download_outlined,
+                                        isPageCached
+                                            ? Icons.offline_pin_rounded
+                                            : Icons.cloud_download_outlined,
                                         size: 15,
-                                        color: isPageCached ? Colors.green : Colors.grey,
+                                        color: isPageCached
+                                            ? Colors.green
+                                            : Colors.grey,
                                       ),
                                       const SizedBox(width: 6),
                                       Expanded(
@@ -631,7 +885,9 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                               : '尚未生成本页人声，点击上方播放按钮即可使用 MiniMax 自动生成并保存',
                                           style: TextStyle(
                                             fontSize: 11,
-                                            color: isPageCached ? Colors.green : Colors.grey,
+                                            color: isPageCached
+                                                ? Colors.green
+                                                : Colors.grey,
                                           ),
                                           overflow: TextOverflow.ellipsis,
                                         ),
@@ -663,7 +919,11 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                       const SizedBox(height: 24),
                       Text(
                         _batchProgressText,
-                        style: const TextStyle(fontSize: 16, height: 1.5, color: Colors.white),
+                        style: const TextStyle(
+                          fontSize: 16,
+                          height: 1.5,
+                          color: Colors.white,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 16),
@@ -679,20 +939,32 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                       ),
                       const SizedBox(height: 20),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 8,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.08),
                           borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: const Color(0xFFD8A24A).withOpacity(0.3)),
+                          border: Border.all(
+                            color: const Color(0xFFD8A24A).withOpacity(0.3),
+                          ),
                         ),
                         child: const Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.lightbulb_outline, size: 16, color: Color(0xFFD8A24A)),
+                            Icon(
+                              Icons.lightbulb_outline,
+                              size: 16,
+                              color: Color(0xFFD8A24A),
+                            ),
                             SizedBox(width: 8),
                             Text(
                               '💡 屏幕常亮保护中 · 逐页绘制实时落盘',
-                              style: TextStyle(fontSize: 12, color: Colors.grey),
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
                             ),
                           ],
                         ),
@@ -711,7 +983,10 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                   children: [
                     CircularProgressIndicator(),
                     SizedBox(height: 16),
-                    Text('正在重绘当前页插画，请稍候...', style: TextStyle(color: Colors.white)),
+                    Text(
+                      '正在重绘当前页插画，请稍候...',
+                      style: TextStyle(color: Colors.white),
+                    ),
                   ],
                 ),
               ),
@@ -723,11 +998,16 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
               right: 0,
               child: Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.black87,
                     borderRadius: BorderRadius.circular(20),
-                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10)],
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black26, blurRadius: 10),
+                    ],
                   ),
                   child: const Row(
                     mainAxisSize: MainAxisSize.min,
@@ -735,7 +1015,10 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                       SizedBox(
                         width: 14,
                         height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFD8A24A)),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFFD8A24A),
+                        ),
                       ),
                       SizedBox(width: 10),
                       Text(
@@ -759,9 +1042,9 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             ElevatedButton.icon(
               onPressed: _currentPage > 0
                   ? () => _pageController.previousPage(
-                        duration: const Duration(milliseconds: 300),
-                        curve: Curves.easeInOut,
-                      )
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                    )
                   : null,
               icon: const Icon(Icons.arrow_back),
               label: const Text('上一页'),
@@ -773,9 +1056,9 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             ElevatedButton.icon(
               onPressed: _currentPage < total - 1
                   ? () => _pageController.nextPage(
-                        duration: const Duration(milliseconds: 300),
-                        curve: Curves.easeInOut,
-                      )
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                    )
                   : null,
               icon: const Icon(Icons.arrow_forward),
               label: const Text('下一页'),
