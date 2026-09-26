@@ -58,6 +58,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   List<PictureBook> _books = [];
   bool _loading = true;
 
+  String? _errorMessage;
+
   @override
   void initState() {
     super.initState();
@@ -65,11 +67,23 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   }
 
   Future<void> _loadBooks() async {
-    final list = await _storage.loadBooks();
-    setState(() {
-      _books = list;
-      _loading = false;
-    });
+    try {
+      final list = await _storage.loadBooks();
+      if (mounted) {
+        setState(() {
+          _books = list;
+          _loading = false;
+          _errorMessage = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _errorMessage = '加载绘本数据失败: $e';
+        });
+      }
+    }
   }
 
   @override
@@ -167,6 +181,33 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                           ),
                         ),
                       ),
+                      if (_errorMessage != null) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.red.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.red.withValues(alpha: 0.4)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.error_outline, color: Colors.redAccent),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(_errorMessage!, style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
+                              ),
+                              TextButton(
+                                onPressed: () {
+                                  setState(() => _loading = true);
+                                  _loadBooks();
+                                },
+                                child: const Text('重试'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 28),
                       // 下方：我的作品书架列表
                       Row(
