@@ -5,6 +5,7 @@ import '../models/app_settings.dart';
 
 class SettingsService {
   static const _prefsKey = 'bookbuddy_settings';
+  static const _secureFullKey = 'sec_full_settings_v2';
   static const _secureLlmKey = 'sec_llm_api_key';
   static const _secureImgKey = 'sec_image_api_key';
   static const _secureFbImgKey = 'sec_fb_image_api_key';
@@ -29,38 +30,71 @@ class SettingsService {
       settings = AppSettings();
     }
 
-    // 优先从安全存储读取敏感 key，若环境不支持钥匙串（如未签名的调试沙箱）则从本地备份恢复
+    // 尝试从 Keychain 安全硬件存储读取更完整的配置
     try {
-      final secLlm = await _secureStorage.read(key: _secureLlmKey);
-      if (secLlm != null && secLlm.isNotEmpty) {
-        settings.llmApiKey = secLlm;
-      } else {
-        settings.llmApiKey = prefs.getString(_backupLlmKey) ?? settings.llmApiKey;
+      final secFull = await _secureStorage.read(key: _secureFullKey);
+      if (secFull != null && secFull.isNotEmpty) {
+        final secSettings = AppSettings.fromJson(jsonDecode(secFull));
+        // 将安全存储中的 profiles key 同步到设置中
+        for (var p in secSettings.llmProfiles) {
+          final target = settings.llmProfiles.where((x) => x.id == p.id).firstOrNull;
+          if (target != null && p.apiKey.isNotEmpty) {
+            target.apiKey = p.apiKey;
+          }
+        }
+        for (var p in secSettings.imageProfiles) {
+          final target = settings.imageProfiles.where((x) => x.id == p.id).firstOrNull;
+          if (target != null && p.apiKey.isNotEmpty) {
+            target.apiKey = p.apiKey;
+          }
+        }
+        if (secSettings.fallbackImageApiKey.isNotEmpty) {
+          settings.fallbackImageApiKey = secSettings.fallbackImageApiKey;
+        }
+        if (secSettings.minimaxApiKey.isNotEmpty) {
+          settings.minimaxApiKey = secSettings.minimaxApiKey;
+        }
       }
-    } catch (_) {
-      settings.llmApiKey = prefs.getString(_backupLlmKey) ?? settings.llmApiKey;
+    } catch (_) {}
+
+    // 兼容旧版：若当前激活 profile 的 key 为空，尝试从旧的安全存储中读取恢复
+    if (settings.llmApiKey.isEmpty) {
+      try {
+        final secLlm = await _secureStorage.read(key: _secureLlmKey);
+        if (secLlm != null && secLlm.isNotEmpty) {
+          settings.llmApiKey = secLlm;
+        } else {
+          settings.llmApiKey = prefs.getString(_backupLlmKey) ?? '';
+        }
+      } catch (_) {
+        settings.llmApiKey = prefs.getString(_backupLlmKey) ?? '';
+      }
     }
 
-    try {
-      final secImg = await _secureStorage.read(key: _secureImgKey);
-      if (secImg != null && secImg.isNotEmpty) {
-        settings.imageApiKey = secImg;
-      } else {
-        settings.imageApiKey = prefs.getString(_backupImgKey) ?? settings.imageApiKey;
+    if (settings.imageApiKey.isEmpty) {
+      try {
+        final secImg = await _secureStorage.read(key: _secureImgKey);
+        if (secImg != null && secImg.isNotEmpty) {
+          settings.imageApiKey = secImg;
+        } else {
+          settings.imageApiKey = prefs.getString(_backupImgKey) ?? '';
+        }
+      } catch (_) {
+        settings.imageApiKey = prefs.getString(_backupImgKey) ?? '';
       }
-    } catch (_) {
-      settings.imageApiKey = prefs.getString(_backupImgKey) ?? settings.imageApiKey;
     }
 
-    try {
-      final secFbImg = await _secureStorage.read(key: _secureFbImgKey);
-      if (secFbImg != null && secFbImg.isNotEmpty) {
-        settings.fallbackImageApiKey = secFbImg;
-      } else {
-        settings.fallbackImageApiKey = prefs.getString(_backupFbImgKey) ?? settings.fallbackImageApiKey;
+    if (settings.fallbackImageApiKey.isEmpty) {
+      try {
+        final secFbImg = await _secureStorage.read(key: _secureFbImgKey);
+        if (secFbImg != null && secFbImg.isNotEmpty) {
+          settings.fallbackImageApiKey = secFbImg;
+        } else {
+          settings.fallbackImageApiKey = prefs.getString(_backupFbImgKey) ?? '';
+        }
+      } catch (_) {
+        settings.fallbackImageApiKey = prefs.getString(_backupFbImgKey) ?? '';
       }
-    } catch (_) {
-      settings.fallbackImageApiKey = prefs.getString(_backupFbImgKey) ?? settings.fallbackImageApiKey;
     }
 
     return settings;
@@ -69,16 +103,13 @@ class SettingsService {
   Future<void> saveSettings(AppSettings settings) async {
     final prefs = await SharedPreferences.getInstance();
 
-    final toSave = AppSettings.fromJson(settings.toJson());
-    toSave.llmApiKey = '';
-    toSave.imageApiKey = '';
-    toSave.fallbackImageApiKey = '';
-
-    await prefs.setString(_prefsKey, jsonEncode(toSave.toJson()));
+    final jsonString = jsonEncode(settings.toJson());
+    await prefs.setString(_prefsKey, jsonString);
 
     // 尝试写入 Keychain / Keystore 安全硬件存储
     bool secureSuccess = true;
     try {
+      await _secureStorage.write(key: _secureFullKey, value: jsonString);
       await _secureStorage.write(key: _secureLlmKey, value: settings.llmApiKey);
       await _secureStorage.write(key: _secureImgKey, value: settings.imageApiKey);
       await _secureStorage.write(
