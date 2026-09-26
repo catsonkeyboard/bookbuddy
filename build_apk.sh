@@ -28,8 +28,9 @@ export FLUTTER_STORAGE_BASE_URL="https://storage.flutter-io.cn"
 # 清理当前会话所有残留的终端代理环境变量，防止把 Gradle 带偏
 unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
 
-# 强制重置 Gradle 内部 JVM 代理参数（直接在命令行覆盖所有历史残留守护进程的代理）
+# 清理 Gradle 启动时的 JVM 代理参数
 GRADLE_NO_PROXY_OPTS="-Dhttp.proxyHost= -Dhttp.proxyPort= -Dhttps.proxyHost= -Dhttps.proxyPort="
+export GRADLE_OPTS="$GRADLE_NO_PROXY_OPTS"
 
 echo -e "\n${GREEN}🚀 已启用国内高速镜像源 (并强制净化终端与 JVM 代理设置):${NC}"
 echo -e "   • PUB_HOSTED_URL = $PUB_HOSTED_URL"
@@ -40,9 +41,27 @@ if [ -d "$HOME/development/flutter/bin" ]; then
     export PATH="$HOME/development/flutter/bin:$PATH"
 fi
 
-if [ -d "$HOME/Library/Android/sdk" ]; then
+# 自动适配 macOS 与 Windows Android SDK 路径
+if [ -d "${ANDROID_HOME:-}" ]; then
+    export PATH="$PATH:$ANDROID_HOME/platform-tools"
+elif [ -d "$HOME/Library/Android/sdk" ]; then
     export ANDROID_HOME="$HOME/Library/Android/sdk"
     export PATH="$PATH:$ANDROID_HOME/platform-tools"
+elif [ -d "$HOME/AppData/Local/Android/Sdk" ]; then
+    export ANDROID_HOME="$HOME/AppData/Local/Android/Sdk"
+    export PATH="$PATH:$ANDROID_HOME/platform-tools"
+elif [ -n "${LOCALAPPDATA:-}" ] && [ -d "$LOCALAPPDATA/Android/Sdk" ]; then
+    export ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"
+    export PATH="$PATH:$ANDROID_HOME/platform-tools"
+fi
+
+if [ -z "${JAVA_HOME:-}" ]; then
+    for jdk in /c/Program\ Files/Microsoft/jdk-17* /c/Program\ Files/Java/jdk-17*; do
+        if [ -d "$jdk" ]; then
+            export JAVA_HOME="$jdk"
+            break
+        fi
+    done
 fi
 
 # 2. 检查依赖工具
@@ -87,10 +106,10 @@ echo -e "\n${YELLOW}🚀 正在编译 Android ARM64 APK (目标平台: android-a
 echo -e "${GREEN}⚡ 实时编译输出流已启动，各项任务进度将直接滚动打印在下方：${NC}\n"
 
 if [ "$BUILD_MODE" = "release" ]; then
-    flutter build apk --release --target-platform android-arm64 $VERBOSE_FLAG --dart-define=GRADLE_OPTS="$GRADLE_NO_PROXY_OPTS"
+    flutter build apk --release --target-platform android-arm64 $VERBOSE_FLAG
     APK_PATH="$SCRIPT_DIR/build/app/outputs/flutter-apk/app-release.apk"
 else
-    flutter build apk --debug --target-platform android-arm64 $VERBOSE_FLAG --dart-define=GRADLE_OPTS="$GRADLE_NO_PROXY_OPTS"
+    flutter build apk --debug --target-platform android-arm64 $VERBOSE_FLAG
     APK_PATH="$SCRIPT_DIR/build/app/outputs/flutter-apk/app-debug.apk"
 fi
 

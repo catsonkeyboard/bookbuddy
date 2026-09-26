@@ -7,8 +7,8 @@
 ## 🛠️ 1. 本地开发环境规范 (Development Environment)
 
 ### 1.1 基础环境与 SDK 路径
-* **操作系统**：macOS (Darwin arm64)
-* **Shell**：`/bin/zsh`
+* **原始开发环境**：macOS (Darwin arm64)，`/bin/zsh`
+* **Windows 开发环境**：PowerShell 5.1/7 或 Git Bash
 * **Flutter SDK 绝对路径**：`$HOME/development/flutter/bin/flutter`
 * **Flutter 版本**：`Flutter 3.47.5 • channel stable`
 * **Dart SDK 版本**：`Dart 3.13.4 • DevTools 2.60.0`
@@ -54,6 +54,12 @@ export PATH="$HOME/development/flutter/bin:$PATH"
   pgrep -fl "flutter|dart"
   kill -9 <PID>
   ```
+
+### 1.5 Windows 本机打包 Android ARM64 APK
+* 在项目根目录运行 `.\build_apk.ps1 -Quiet` 构建 Debug APK，运行 `.\build_apk.ps1 -Release -Quiet` 构建 Release APK。也可在 Git Bash 中使用 `./build_apk.sh -q` 或 `./build_apk.sh release -q`。
+* 脚本会配置 Flutter 国内镜像，并查找用户目录下的 Flutter SDK、Android SDK 和已安装的 JDK 17。其他安装位置可通过 `PATH`、`ANDROID_HOME` 和 `JAVA_HOME` 指定。
+* APK 输出在 `build/app/outputs/flutter-apk/app-debug.apk` 或 `app-release.apk`。Release 构建用于正式发布时，仍需确认 Android 签名配置。
+* 在 PowerShell 中执行 `flutter analyze` 与 `flutter test`；执行前确保已设置 `PUB_HOSTED_URL` 和 `FLUTTER_STORAGE_BASE_URL`。
 
 ---
 
