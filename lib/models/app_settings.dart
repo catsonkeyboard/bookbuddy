@@ -423,6 +423,25 @@ class AppSettings {
         'minimaxSpeed': minimaxSpeed,
       };
 
+  /// Settings that may be kept in ordinary preferences or device backups.
+  Map<String, dynamic> toPublicJson() {
+    final data = toJson();
+    for (final key in [
+      'llmApiKey',
+      'imageApiKey',
+      'fallbackImageApiKey',
+      'minimaxApiKey',
+    ]) {
+      data[key] = '';
+    }
+    for (final key in ['llmProfiles', 'imageProfiles']) {
+      for (final profile in data[key] as List<dynamic>) {
+        (profile as Map<String, dynamic>)['apiKey'] = '';
+      }
+    }
+    return data;
+  }
+
   factory AppSettings.fromJson(Map<String, dynamic> json) {
     List<LlmProfile>? loadedLlmProfiles;
     if (json['llmProfiles'] is List) {

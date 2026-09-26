@@ -1,15 +1,19 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
+
 import '../models/app_settings.dart';
 
 class TtsService {
-  final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 30),
-    receiveTimeout: const Duration(seconds: 60),
-  ));
+  final Dio _dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 60),
+    ),
+  );
 
   /// 获取某绘本某一页的本地音频文件路径
   Future<String> getLocalAudioPath({
@@ -30,15 +34,33 @@ class TtsService {
     required int pageIndex,
     String? knownPath,
   }) async {
+    return await getCachedAudioPath(
+          bookId: bookId,
+          pageIndex: pageIndex,
+          knownPath: knownPath,
+        ) !=
+        null;
+  }
+
+  /// Return the path that actually exists; a stored path may become stale.
+  Future<String?> getCachedAudioPath({
+    required String bookId,
+    required int pageIndex,
+    String? knownPath,
+  }) async {
     if (knownPath != null && knownPath.isNotEmpty) {
       final f = File(knownPath);
       if (await f.exists() && await f.length() > 0) {
-        return true;
+        return knownPath;
       }
     }
     final path = await getLocalAudioPath(bookId: bookId, pageIndex: pageIndex);
     final f = File(path);
-    return await f.exists() && await f.length() > 0;
+    if (await f.exists() && await f.length() > 0) return path;
+    final backup = File('$path.bak');
+    return await backup.exists() && await backup.length() > 0
+        ? backup.path
+        : null;
   }
 
   /// 为某页故事文本合成语音，并保存到本地
@@ -55,11 +77,16 @@ class TtsService {
       throw Exception('当前页故事文本为空，无法合成语音');
     }
 
-    final localPath = await getLocalAudioPath(bookId: bookId, pageIndex: pageIndex);
+    final localPath = await getLocalAudioPath(
+      bookId: bookId,
+      pageIndex: pageIndex,
+    );
     final localFile = File(localPath);
 
     // 检查缓存
-    if (!forceRefresh && await localFile.exists() && await localFile.length() > 0) {
+    if (!forceRefresh &&
+        await localFile.exists() &&
+        await localFile.length() > 0) {
       return localPath;
     }
 
@@ -77,11 +104,15 @@ class TtsService {
     final url = 'https://api.minimax.chat/v1/t2a_v2?GroupId=$groupId';
 
     final requestBody = {
-      'model': settings.minimaxModel.isNotEmpty ? settings.minimaxModel : 'speech-01-turbo',
+      'model': settings.minimaxModel.isNotEmpty
+          ? settings.minimaxModel
+          : 'speech-01-turbo',
       'text': cleanText,
       'stream': false,
       'voice_setting': {
-        'voice_id': settings.minimaxVoiceId.isNotEmpty ? settings.minimaxVoiceId : 'audiobook_female_1',
+        'voice_id': settings.minimaxVoiceId.isNotEmpty
+            ? settings.minimaxVoiceId
+            : 'audiobook_female_1',
         'speed': settings.minimaxSpeed,
         'vol': 1.0,
         'pitch': 0,
@@ -133,7 +164,27 @@ class TtsService {
 
       // 将返回数据转为字节码并写入本地文件
       final audioBytes = _decodeAudioData(audioRaw);
-      await localFile.writeAsBytes(audioBytes, flush: true);
+      final temp = File('$localPath.tmp');
+      final backup = File('$localPath.bak');
+      await temp.writeAsBytes(audioBytes, flush: true);
+      var movedOriginal = false;
+      try {
+        if (await localFile.exists()) {
+          if (await backup.exists()) await backup.delete();
+          await localFile.rename(backup.path);
+          movedOriginal = true;
+        }
+        await temp.rename(localPath);
+      } catch (_) {
+        if (movedOriginal &&
+            !await localFile.exists() &&
+            await backup.exists()) {
+          await backup.copy(localPath);
+        }
+        rethrow;
+      } finally {
+        if (await temp.exists()) await temp.delete();
+      }
 
       return localPath;
     } on DioException catch (e) {
