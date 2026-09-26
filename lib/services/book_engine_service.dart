@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import '../models/app_settings.dart';
 import '../models/book.dart';
 
@@ -504,75 +505,120 @@ $storyText
     return null;
   }
 
-  /// 从上游各种异构 JSON 响应（choices、data、images、url）中稳健提取图片并转为 Base64
+  /// 从上游各种异构 JSON 响应（choices、delta、assembled_history、data、images、url）中稳健提取图片并转为 Base64
   Future<String?> _extractImageFromResponse(dynamic data) async {
     if (data == null) return null;
 
-    // 1. data 数组风格 (智谱 GLM, DALL-E, 腾讯 TokenHub)
-    if (data is Map && data['data'] is List) {
-      final list = data['data'] as List;
-      if (list.isNotEmpty && list[0] is Map) {
-        final item = list[0] as Map;
-        if (item['b64_json'] != null && item['b64_json'].toString().isNotEmpty) {
-          return item['b64_json'].toString();
-        }
-        final u = item['url']?.toString();
-        if (u != null && u.isNotEmpty) {
-          return await _downloadImageAsBase64(u);
-        }
-      }
-    }
-
-    // 2. choices 风格 (Chat 补全 / 腾讯混元 3.5 多模态生图)
+    // 1. 腾讯 TokenHub 混元 3.5: choices[].delta.image.url
     if (data is Map && data['choices'] is List) {
       final choices = data['choices'] as List;
-      if (choices.isNotEmpty && choices[0] is Map) {
-        final choice = choices[0] as Map;
-        final msg = choice['message'] is Map ? (choice['message'] as Map) : choice;
-
-        // choices.message.images
-        if (msg['images'] is List) {
-          final imgs = msg['images'] as List;
-          if (imgs.isNotEmpty) {
-            final firstImg = imgs[0];
-            String? u;
-            if (firstImg is Map) {
-              u = firstImg['url']?.toString() ?? firstImg['image_url']?['url']?.toString();
-            } else if (firstImg is String) {
-              u = firstImg;
+      for (var choice in choices) {
+        if (choice is Map) {
+          // delta.image.url
+          final delta = choice['delta'];
+          if (delta is Map) {
+            final imgObj = delta['image'];
+            if (imgObj is Map && imgObj['url'] != null) {
+              final u = imgObj['url'].toString();
+              if (u.isNotEmpty) return await _downloadImageAsBase64(u);
             }
-            if (u != null && u.isNotEmpty) {
-              return await _downloadImageAsBase64(u);
+            if (delta['image_url'] != null) {
+              final u = delta['image_url'] is Map
+                  ? delta['image_url']['url']?.toString()
+                  : delta['image_url'].toString();
+              if (u != null && u.isNotEmpty) return await _downloadImageAsBase64(u);
+            }
+          }
+
+          // message.images 或 message.image_url
+          final msg = choice['message'];
+          if (msg is Map) {
+            if (msg['images'] is List) {
+              final imgs = msg['images'] as List;
+              for (var img in imgs) {
+                String? u;
+                if (img is Map) {
+                  u = img['url']?.toString() ?? img['image_url']?['url']?.toString();
+                } else if (img is String) {
+                  u = img;
+                }
+                if (u != null && u.isNotEmpty) return await _downloadImageAsBase64(u);
+              }
+            }
+            if (msg['image_url'] != null) {
+              final u = msg['image_url'] is Map
+                  ? msg['image_url']['url']?.toString()
+                  : msg['image_url'].toString();
+              if (u != null && u.isNotEmpty) return await _downloadImageAsBase64(u);
+            }
+
+            // message.content 中的纯 URL 或 Markdown 图片语法
+            final textContent = msg['content']?.toString() ?? '';
+            if (textContent.startsWith('http')) {
+              return await _downloadImageAsBase64(textContent.trim());
+            }
+            final mdImgMatch = RegExp(r'!\[.*?\]\((https?://[^\s\)]+)\)').firstMatch(textContent);
+            if (mdImgMatch != null) {
+              return await _downloadImageAsBase64(mdImgMatch.group(1)!);
+            }
+            final rawUrlMatch = RegExp(r'https?://[^\s"]+\.(?:png|jpg|jpeg|webp)').firstMatch(textContent);
+            if (rawUrlMatch != null) {
+              return await _downloadImageAsBase64(rawUrlMatch.group(0)!);
             }
           }
         }
+      }
+    }
 
-        // choices.message.content (提取纯 URL 或 Markdown 图片语法)
-        final textContent = msg['content']?.toString() ?? '';
-        if (textContent.startsWith('http')) {
-          return await _downloadImageAsBase64(textContent.trim());
-        }
-        final mdImgMatch = RegExp(r'!\[.*?\]\((https?://[^\s\)]+)\)').firstMatch(textContent);
-        if (mdImgMatch != null) {
-          return await _downloadImageAsBase64(mdImgMatch.group(1)!);
-        }
-        final rawUrlMatch = RegExp(r'https?://[^\s"]+\.(?:png|jpg|jpeg|webp)').firstMatch(textContent);
-        if (rawUrlMatch != null) {
-          return await _downloadImageAsBase64(rawUrlMatch.group(0)!);
+    // 2. 腾讯 TokenHub 混元 3.5 工具历史链: assembled_history[].content[].image_url.url
+    if (data is Map && data['assembled_history'] is List) {
+      final history = data['assembled_history'] as List;
+      for (var item in history) {
+        if (item is Map && item['content'] is List) {
+          final contents = item['content'] as List;
+          for (var c in contents) {
+            if (c is Map) {
+              if (c['image_url'] != null) {
+                final u = c['image_url'] is Map
+                    ? c['image_url']['url']?.toString()
+                    : c['image_url'].toString();
+                if (u != null && u.isNotEmpty) return await _downloadImageAsBase64(u);
+              }
+              if (c['url'] != null) {
+                final u = c['url'].toString();
+                if (u.isNotEmpty) return await _downloadImageAsBase64(u);
+              }
+            }
+          }
         }
       }
     }
 
-    // 3. images 列表风格
+    // 3. 标准 OpenAI / 智谱 GLM 风格: data[].b64_json 或 data[].url
+    if (data is Map && data['data'] is List) {
+      final list = data['data'] as List;
+      for (var item in list) {
+        if (item is Map) {
+          if (item['b64_json'] != null && item['b64_json'].toString().isNotEmpty) {
+            return item['b64_json'].toString();
+          }
+          final u = item['url']?.toString();
+          if (u != null && u.isNotEmpty) {
+            return await _downloadImageAsBase64(u);
+          }
+        }
+      }
+    }
+
+    // 4. images 列表风格
     if (data is Map && data['images'] is List) {
       final imgs = data['images'] as List;
-      if (imgs.isNotEmpty) {
-        final firstImg = imgs[0];
+      for (var img in imgs) {
         String? u;
-        if (firstImg is Map) {
-          u = firstImg['url']?.toString();
-        } else if (firstImg is String) {
-          u = firstImg;
+        if (img is Map) {
+          u = img['url']?.toString() ?? img['image_url']?['url']?.toString();
+        } else if (img is String) {
+          u = img;
         }
         if (u != null && u.isNotEmpty) {
           return await _downloadImageAsBase64(u);
@@ -580,11 +626,46 @@ $storyText
       }
     }
 
-    // 4. 顶层 url 风格
+    // 5. 顶层直接包含 url 字段
     if (data is Map && data['url'] != null) {
-      return await _downloadImageAsBase64(data['url'].toString());
+      final u = data['url'].toString();
+      if (u.isNotEmpty) return await _downloadImageAsBase64(u);
     }
 
+    // 6. 深度递归兜底扫描：探测任意包含图片 URL 或 Base64 的叶子字段
+    final recursiveUrl = _findFirstImageUrl(data);
+    if (recursiveUrl != null) {
+      return await _downloadImageAsBase64(recursiveUrl);
+    }
+
+    return null;
+  }
+
+  /// 递归深度扫描未知嵌套 JSON 中的有效图片下载链接
+  String? _findFirstImageUrl(dynamic node) {
+    if (node is Map) {
+      for (var entry in node.entries) {
+        final val = entry.value;
+        if (val is String &&
+            val.startsWith('http') &&
+            (val.contains('.png') ||
+                val.contains('.jpg') ||
+                val.contains('.jpeg') ||
+                val.contains('.webp') ||
+                val.contains('cos.') ||
+                val.contains('myqcloud.com') ||
+                val.contains('image'))) {
+          return val;
+        }
+        final found = _findFirstImageUrl(val);
+        if (found != null) return found;
+      }
+    } else if (node is List) {
+      for (var item in node) {
+        final found = _findFirstImageUrl(item);
+        if (found != null) return found;
+      }
+    }
     return null;
   }
 
@@ -625,4 +706,7 @@ $storyText
     }
     return {};
   }
+
+  @visibleForTesting
+  Future<String?> extractImageFromResponseForTesting(dynamic data) => _extractImageFromResponse(data);
 }
