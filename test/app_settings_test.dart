@@ -140,6 +140,23 @@ void main() {
       expect(res2!.startsWith('iVBORw0KGgo'), isTrue);
     });
 
+    test('Zhipu GLM image response format extraction', () async {
+      final engine = BookEngineService();
+
+      // data[0].b64_json 格式
+      final sampleB64 = {
+        'created': 1720000000,
+        'data': [
+          {
+            'b64_json': 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          }
+        ]
+      };
+      final res = await engine.extractImageFromResponseForTesting(sampleB64);
+      expect(res, isNotNull);
+      expect(res!.startsWith('iVBORw0KGgo'), isTrue);
+    });
+
     test('Old format JSON backward compatibility upgrade', () {
       final legacyJson = {
         'llmType': 'anthropic',

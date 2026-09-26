@@ -421,29 +421,45 @@ $storyText
           ? baseUrl.substring(0, baseUrl.length - 1)
           : baseUrl;
 
-      // 1. 优先尝试标准生图接口 /images/generations (智谱 GLM, 腾讯 TokenHub 生图, DALL-E 均遵循此标准)
-      try {
-        final imgUrl = cleanBase.endsWith('/images/generations')
+      String imgUrl;
+      if (cleanBase.contains('bigmodel.cn')) {
+        // 智谱官方开放平台：无论输入是域名根目录还是 /v4，统一自动规范化为 /api/paas/v4/images/generations
+        imgUrl = cleanBase.endsWith('/images/generations')
+            ? cleanBase
+            : (cleanBase.endsWith('/v4')
+                ? '$cleanBase/images/generations'
+                : 'https://open.bigmodel.cn/api/paas/v4/images/generations');
+      } else {
+        imgUrl = cleanBase.endsWith('/images/generations')
             ? cleanBase
             : (cleanBase.endsWith('/v1') || cleanBase.endsWith('/v4')
                 ? '$cleanBase/images/generations'
                 : '$cleanBase/v1/images/generations');
+      }
 
-        final headers = {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $apiKey',
-        };
+      final headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $apiKey',
+      };
 
-        final Map<String, dynamic> requestData = {
-          'model': model,
-          'prompt': prompt,
-        };
-        if (model.toLowerCase().contains('glm-image') ||
-            model.toLowerCase().contains('cogview') ||
-            baseUrl.contains('bigmodel.cn')) {
-          requestData['size'] = '1280x1280';
-        }
+      final Map<String, dynamic> requestData = {
+        'model': model,
+        'prompt': prompt,
+      };
 
+      // 针对智谱 GLM 生图各版本精确适配分辨率
+      final lowerModel = model.toLowerCase();
+      if (lowerModel.contains('glm-image')) {
+        requestData['size'] = '1280x1280';
+      } else if (lowerModel.contains('cogview-3')) {
+        // CogView-3 系列仅支持 1024x1024，不可乱填 1280x1280 避免触发 1214 尺寸报错
+        requestData['size'] = '1024x1024';
+      } else if (lowerModel.contains('cogview-4') || baseUrl.contains('bigmodel.cn')) {
+        requestData['size'] = '1280x1280';
+      }
+
+      // 1. 优先尝试标准生图接口 /images/generations (智谱 GLM, DALL-E, 腾讯聚合均遵循此标准)
+      try {
         final resp = await _dio.post(
           imgUrl,
           options: Options(headers: headers),
@@ -453,13 +469,17 @@ $storyText
         final res = await _extractImageFromResponse(resp.data);
         if (res != null) return res;
       } on DioException catch (dioErr) {
-        // 如果是 404/405 说明该服务端未提供 /images/generations 端点，降级尝试 /chat/completions
         final code = dioErr.response?.statusCode;
-        if (code != 404 && code != 405 && code != 400) {
-          rethrow;
+        // 仅在明确为 404 (端点未找到) 或 405 (Method Not Allowed) 时，才降级尝试 /chat/completions
+        if (code == 404 || code == 405) {
+          // 继续尝试下游聊天降级
+        } else {
+          // 400 (敏感词过滤/参数非法)、401 (Key无效)、402 (余额不足)、429 (限流) 均为明确业务错误，提取后明确抛出！
+          final errorMsg = _extractErrorMessage(dioErr);
+          throw Exception(errorMsg);
         }
-      } catch (_) {
-        // 其他非致命格式异常，尝试聊天生图降级
+      } catch (e) {
+        if (e is! DioException) rethrow;
       }
 
       // 2. 降级尝试聊天补全多模态生图 (适用于某些将生图封装为 chat/completions 的网关)
@@ -685,6 +705,33 @@ $storyText
       return base64Encode(response.data!);
     }
     throw Exception('下载上游生成的图片失败，数据为空');
+  }
+
+  /// 提取第三方 AI 平台详细的错误说明（如智谱 1301 敏感词、1214 密钥错误、余额不足等）
+  String _extractErrorMessage(DioException dioErr) {
+    final data = dioErr.response?.data;
+    if (data is Map) {
+      if (data['error'] is Map) {
+        final err = data['error'] as Map;
+        final msg = err['message'] ?? err['msg'];
+        final code = err['code'];
+        if (msg != null && msg.toString().isNotEmpty) {
+          return code != null ? '上游接口报错 [$code]: $msg' : '上游接口报错: $msg';
+        }
+      }
+      final msg = data['message'] ?? data['msg'];
+      if (msg != null && msg.toString().isNotEmpty) {
+        final code = data['code'];
+        return code != null ? '上游接口报错 [$code]: $msg' : '上游接口报错: $msg';
+      }
+    }
+    final status = dioErr.response?.statusCode;
+    if (status != null) {
+      if (status == 401) return 'API Key 无效或未授权 (401)，请检查填写的密钥';
+      if (status == 402 || status == 429) return '接口余额不足或请求频率超限 (429/402)，请检查账户额度';
+      if (status == 400) return '接口请求参数错误或提示词触发安全风控拦截 (400)';
+    }
+    return dioErr.message ?? dioErr.toString();
   }
 
   dynamic _extractJson(String raw) {
