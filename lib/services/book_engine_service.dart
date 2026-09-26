@@ -216,6 +216,34 @@ $storyText
       if (cands.isEmpty) throw Exception('Gemini 未返回内容');
       final parts = cands[0]['content']['parts'] as List? ?? [];
       return parts.map((p) => p['text'] ?? '').join();
+    } else if (settings.llmType == 'anthropic') {
+      final base = settings.llmBaseUrl.endsWith('/')
+          ? settings.llmBaseUrl.substring(0, settings.llmBaseUrl.length - 1)
+          : settings.llmBaseUrl;
+      final url = '$base/v1/messages';
+      final resp = await _dio.post(
+        url,
+        options: Options(headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': settings.llmApiKey,
+          'anthropic-version': '2023-06-01',
+        }),
+        data: {
+          'model': settings.llmModel,
+          'max_tokens': 4096,
+          'system': systemPrompt,
+          'messages': [
+            {'role': 'user', 'content': userPrompt},
+          ],
+        },
+      );
+      final content = resp.data['content'] as List? ?? [];
+      if (content.isEmpty) throw Exception('Anthropic Claude 接口未返回内容');
+      final textParts = content
+          .where((c) => c['type'] == 'text')
+          .map((c) => c['text'] ?? '')
+          .toList();
+      return textParts.join();
     } else {
       // OpenAI 兼容协议
       final base = settings.llmBaseUrl.endsWith('/v1') ? settings.llmBaseUrl : '${settings.llmBaseUrl}/v1';
@@ -248,6 +276,67 @@ $storyText
     required String negative,
     String? referenceImageBase64,
   }) async {
+    // 自动判定或按协议走 腾讯 TokenHub 混元 3.5 生图接口
+    final isTokenHub = type == 'tokenhub' ||
+        baseUrl.contains('tokenhub.tencentmaas.com') ||
+        baseUrl.contains('wand/hunyuan-image') ||
+        model.toLowerCase().contains('hy-image');
+
+    if (isTokenHub) {
+      String targetUrl = baseUrl.trim();
+      if (!targetUrl.contains('v35-generation')) {
+        final clean = targetUrl.endsWith('/')
+            ? targetUrl.substring(0, targetUrl.length - 1)
+            : targetUrl;
+        if (clean.endsWith('/v1')) {
+          targetUrl = '$clean/wand/hunyuan-image/v35-generation';
+        } else {
+          targetUrl = '$clean/v1/wand/hunyuan-image/v35-generation';
+        }
+      }
+
+      final sessionId = 'bookbuddy-${DateTime.now().millisecondsSinceEpoch}';
+      final List<Map<String, dynamic>> contentList = [
+        {'type': 'text', 'text': prompt},
+      ];
+
+      // 若有主角基准参考图，按混元 3.5 规范传入 image_url
+      if (referenceImageBase64 != null && referenceImageBase64.isNotEmpty) {
+        contentList.add({
+          'type': 'image_url',
+          'image_url': {
+            'url': referenceImageBase64.startsWith('http')
+                ? referenceImageBase64
+                : 'data:image/jpeg;base64,$referenceImageBase64',
+          },
+        });
+      }
+
+      final resp = await _dio.post(
+        targetUrl,
+        options: Options(headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $apiKey',
+        }),
+        data: {
+          'model': model.isNotEmpty ? model : 'hy-image-v3.5-preview',
+          'session': sessionId,
+          'messages': [
+            {
+              'role': 'user',
+              'content': contentList,
+            }
+          ],
+        },
+      );
+
+      final imgResult = await _extractImageFromResponse(resp.data);
+      if (imgResult != null) {
+        return imgResult;
+      }
+      throw Exception('腾讯 TokenHub 接口已响应但未提取到有效图片数据: ${resp.data}');
+    }
+
     if (type == 'gemini') {
       final base = baseUrl.replaceAll(RegExp(r'/v1(beta)?/?$'), '');
       if (model.toLowerCase().contains('imagen')) {
@@ -326,8 +415,59 @@ $storyText
         }
       }
     } else {
-      // OpenAI 兼容聊天生图 (支持多模态参考图传入)
-      final base = baseUrl.endsWith('/v1') ? baseUrl : '$baseUrl/v1';
+      // OpenAI 规范生图 (智谱 GLM CogView / 腾讯 TokenHub / DALL-E 3 / 自建兼容网关)
+      final cleanBase = baseUrl.endsWith('/')
+          ? baseUrl.substring(0, baseUrl.length - 1)
+          : baseUrl;
+
+      // 1. 优先尝试标准生图接口 /images/generations (智谱 GLM, 腾讯 TokenHub 生图, DALL-E 均遵循此标准)
+      try {
+        final imgUrl = cleanBase.endsWith('/images/generations')
+            ? cleanBase
+            : (cleanBase.endsWith('/v1') || cleanBase.endsWith('/v4')
+                ? '$cleanBase/images/generations'
+                : '$cleanBase/v1/images/generations');
+
+        final headers = {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $apiKey',
+        };
+
+        final Map<String, dynamic> requestData = {
+          'model': model,
+          'prompt': prompt,
+        };
+        if (model.toLowerCase().contains('glm-image') ||
+            model.toLowerCase().contains('cogview') ||
+            baseUrl.contains('bigmodel.cn')) {
+          requestData['size'] = '1280x1280';
+        }
+
+        final resp = await _dio.post(
+          imgUrl,
+          options: Options(headers: headers),
+          data: requestData,
+        );
+
+        final res = await _extractImageFromResponse(resp.data);
+        if (res != null) return res;
+      } on DioException catch (dioErr) {
+        // 如果是 404/405 说明该服务端未提供 /images/generations 端点，降级尝试 /chat/completions
+        final code = dioErr.response?.statusCode;
+        if (code != 404 && code != 405 && code != 400) {
+          rethrow;
+        }
+      } catch (_) {
+        // 其他非致命格式异常，尝试聊天生图降级
+      }
+
+      // 2. 降级尝试聊天补全多模态生图 (适用于某些将生图封装为 chat/completions 的网关)
+      final chatUrl = cleanBase.endsWith('/chat/completions')
+          ? cleanBase
+          : (cleanBase.endsWith('/v1') || cleanBase.endsWith('/v4')
+              ? '$cleanBase/chat/completions'
+              : '$cleanBase/v1/chat/completions');
+
       dynamic content;
       if (referenceImageBase64 != null && referenceImageBase64.isNotEmpty) {
         content = [
@@ -347,7 +487,7 @@ $storyText
       }
 
       final resp = await _dio.post(
-        '$base/chat/completions',
+        chatUrl,
         options: Options(headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $apiKey',
@@ -357,19 +497,113 @@ $storyText
           'messages': [{'role': 'user', 'content': content}],
         },
       );
-      final choices = resp.data['choices'] as List? ?? [];
-      if (choices.isNotEmpty) {
-        final msg = choices[0]['message'] ?? {};
-        final images = msg['images'] as List? ?? [];
-        if (images.isNotEmpty) {
-          final u = images[0]['image_url']?['url'] ?? '';
-          if (u.startsWith('data:image')) {
-            return u.split(',').last;
-          }
+
+      final chatRes = await _extractImageFromResponse(resp.data);
+      if (chatRes != null) return chatRes;
+    }
+    return null;
+  }
+
+  /// 从上游各种异构 JSON 响应（choices、data、images、url）中稳健提取图片并转为 Base64
+  Future<String?> _extractImageFromResponse(dynamic data) async {
+    if (data == null) return null;
+
+    // 1. data 数组风格 (智谱 GLM, DALL-E, 腾讯 TokenHub)
+    if (data is Map && data['data'] is List) {
+      final list = data['data'] as List;
+      if (list.isNotEmpty && list[0] is Map) {
+        final item = list[0] as Map;
+        if (item['b64_json'] != null && item['b64_json'].toString().isNotEmpty) {
+          return item['b64_json'].toString();
+        }
+        final u = item['url']?.toString();
+        if (u != null && u.isNotEmpty) {
+          return await _downloadImageAsBase64(u);
         }
       }
     }
+
+    // 2. choices 风格 (Chat 补全 / 腾讯混元 3.5 多模态生图)
+    if (data is Map && data['choices'] is List) {
+      final choices = data['choices'] as List;
+      if (choices.isNotEmpty && choices[0] is Map) {
+        final choice = choices[0] as Map;
+        final msg = choice['message'] is Map ? (choice['message'] as Map) : choice;
+
+        // choices.message.images
+        if (msg['images'] is List) {
+          final imgs = msg['images'] as List;
+          if (imgs.isNotEmpty) {
+            final firstImg = imgs[0];
+            String? u;
+            if (firstImg is Map) {
+              u = firstImg['url']?.toString() ?? firstImg['image_url']?['url']?.toString();
+            } else if (firstImg is String) {
+              u = firstImg;
+            }
+            if (u != null && u.isNotEmpty) {
+              return await _downloadImageAsBase64(u);
+            }
+          }
+        }
+
+        // choices.message.content (提取纯 URL 或 Markdown 图片语法)
+        final textContent = msg['content']?.toString() ?? '';
+        if (textContent.startsWith('http')) {
+          return await _downloadImageAsBase64(textContent.trim());
+        }
+        final mdImgMatch = RegExp(r'!\[.*?\]\((https?://[^\s\)]+)\)').firstMatch(textContent);
+        if (mdImgMatch != null) {
+          return await _downloadImageAsBase64(mdImgMatch.group(1)!);
+        }
+        final rawUrlMatch = RegExp(r'https?://[^\s"]+\.(?:png|jpg|jpeg|webp)').firstMatch(textContent);
+        if (rawUrlMatch != null) {
+          return await _downloadImageAsBase64(rawUrlMatch.group(0)!);
+        }
+      }
+    }
+
+    // 3. images 列表风格
+    if (data is Map && data['images'] is List) {
+      final imgs = data['images'] as List;
+      if (imgs.isNotEmpty) {
+        final firstImg = imgs[0];
+        String? u;
+        if (firstImg is Map) {
+          u = firstImg['url']?.toString();
+        } else if (firstImg is String) {
+          u = firstImg;
+        }
+        if (u != null && u.isNotEmpty) {
+          return await _downloadImageAsBase64(u);
+        }
+      }
+    }
+
+    // 4. 顶层 url 风格
+    if (data is Map && data['url'] != null) {
+      return await _downloadImageAsBase64(data['url'].toString());
+    }
+
     return null;
+  }
+
+  /// 远程图片下载并转换为本地 Base64 编码
+  Future<String> _downloadImageAsBase64(String imageUrl) async {
+    if (imageUrl.startsWith('data:image')) {
+      return imageUrl.split(',').last;
+    }
+    final response = await _dio.get<List<int>>(
+      imageUrl,
+      options: Options(
+        responseType: ResponseType.bytes,
+        receiveTimeout: const Duration(seconds: 60),
+      ),
+    );
+    if (response.data != null && response.data!.isNotEmpty) {
+      return base64Encode(response.data!);
+    }
+    throw Exception('下载上游生成的图片失败，数据为空');
   }
 
   dynamic _extractJson(String raw) {
