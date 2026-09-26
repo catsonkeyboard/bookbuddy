@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:bookbuddy/models/app_settings.dart';
+import 'package:bookbuddy/services/book_engine_service.dart';
 
 void main() {
   group('AppSettings Multi-Profile Tests', () {
@@ -96,6 +97,47 @@ void main() {
       // 验证预设模板库
       expect(ImagePreset.presets.any((p) => p.label.contains('智谱 GLM')), isTrue);
       expect(ImagePreset.presets.any((p) => p.label.contains('腾讯 TokenHub')), isTrue);
+    });
+
+    test('Tencent TokenHub response format extraction', () async {
+      final engine = BookEngineService();
+
+      // 1. choices[].delta.image.url 格式 (TokenHub 实际流式输出)
+      final sampleChunk = {
+        'choices': [
+          {
+            'delta': {
+              'image': {
+                'url': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+                'type': 'image',
+              },
+            },
+          }
+        ],
+      };
+      final res1 = await engine.extractImageFromResponseForTesting(sampleChunk);
+      expect(res1, isNotNull);
+      expect(res1!.startsWith('iVBORw0KGgo'), isTrue);
+
+      // 2. assembled_history 工具链格式 (TokenHub 历史消息备份)
+      final sampleHistory = {
+        'assembled_history': [
+          {
+            'content': [
+              {
+                'image_url': {
+                  'url': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+                },
+                'type': 'image_url',
+              }
+            ],
+            'role': 'tool',
+          }
+        ],
+      };
+      final res2 = await engine.extractImageFromResponseForTesting(sampleHistory);
+      expect(res2, isNotNull);
+      expect(res2!.startsWith('iVBORw0KGgo'), isTrue);
     });
 
     test('Old format JSON backward compatibility upgrade', () {
