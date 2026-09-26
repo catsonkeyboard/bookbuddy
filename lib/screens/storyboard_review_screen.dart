@@ -190,6 +190,9 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
       _progressValue = 0;
     });
     try {
+      await WakelockPlus.enable();
+    } catch (_) {}
+    try {
       for (var i = 0; i < targets.length; i++) {
         final character = targets[i];
         if (mounted) {
@@ -222,6 +225,9 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
         );
       }
     } finally {
+      try {
+        await WakelockPlus.disable();
+      } catch (_) {}
       if (mounted) setState(() => _isGenerating = false);
     }
   }
