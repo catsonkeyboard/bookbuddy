@@ -344,64 +344,170 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   }
 
   void _showCharacterReferences() {
+    String? updatingCharId;
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('角色设定与定妆照'),
-        content: SizedBox(
-          width: 620,
-          height: 460,
-          child: ListView(
-            children: [
-              for (final character in _book.characters)
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        SizedBox(
-                          width: 100,
-                          height: 120,
-                          child: character.referenceImageBase64 == null
-                              ? const Icon(Icons.person_outline, size: 48)
-                              : Image.memory(
-                                  base64Decode(character.referenceImageBase64!),
-                                  fit: BoxFit.contain,
-                                ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                character.name,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('角色设定与定妆照'),
+          content: SizedBox(
+            width: 620,
+            height: 480,
+            child: ListView(
+              children: [
+                if (_book.characters.isEmpty && _book.protagonistRefImage != null)
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: SizedBox(
+                              width: 100,
+                              height: 120,
+                              child: Image.memory(
+                                base64Decode(_book.protagonistRefImage!),
+                                fit: BoxFit.cover,
                               ),
-                              const SizedBox(height: 8),
-                              if (character.species.isNotEmpty)
-                                Text('物种：${character.species}'),
-                              Text('固定外貌：${character.appearance}'),
-                              Text('默认服装：${character.defaultOutfit}'),
-                            ],
+                            ),
                           ),
-                        ),
-                      ],
+                          const SizedBox(width: 14),
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '🌟 主角基准定妆图 (全书基准)',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                                SizedBox(height: 8),
+                                Text(
+                                  '以首张主角插画作为全书定妆照基准，用于锁定后续各页面的角色外貌一致性。',
+                                  style: TextStyle(color: Colors.grey, fontSize: 13),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-            ],
+                for (final character in _book.characters)
+                  Card(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: SizedBox(
+                              width: 100,
+                              height: 120,
+                              child: updatingCharId == character.id
+                                  ? const Center(
+                                      child: SizedBox(
+                                        width: 24,
+                                        height: 24,
+                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                      ),
+                                    )
+                                  : (character.referenceImageBase64 == null
+                                      ? const Center(
+                                          child: Icon(Icons.person_outline, size: 48, color: Colors.grey),
+                                        )
+                                      : Image.memory(
+                                          base64Decode(character.referenceImageBase64!),
+                                          fit: BoxFit.cover,
+                                        )),
+                            ),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      character.name,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                    TextButton.icon(
+                                      style: TextButton.styleFrom(
+                                        visualDensity: VisualDensity.compact,
+                                        foregroundColor: const Color(0xFFD8A24A),
+                                      ),
+                                      icon: const Icon(Icons.refresh, size: 16),
+                                      label: Text(
+                                        character.referenceImageBase64 == null ? '生成定妆照' : '重绘定妆照',
+                                        style: const TextStyle(fontSize: 12),
+                                      ),
+                                      onPressed: updatingCharId != null
+                                          ? null
+                                          : () async {
+                                              setDialogState(() => updatingCharId = character.id);
+                                              try {
+                                                final settings = await _settingsService.loadSettings();
+                                                final style = StyleCatalog.styles.firstWhere(
+                                                  (s) => s.id == _book.styleId,
+                                                  orElse: () => StyleCatalog.styles.first,
+                                                );
+                                                final image = await _engine.generateCharacterReference(
+                                                  settings: settings,
+                                                  style: style,
+                                                  character: character,
+                                                );
+                                                if (image != null && image.isNotEmpty) {
+                                                  character.referenceImageBase64 = image;
+                                                  await _storage.saveBook(_book);
+                                                  if (mounted) setState(() {});
+                                                }
+                                              } catch (e) {
+                                                if (ctx.mounted) {
+                                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                                    SnackBar(content: Text('定妆照生成失败: $e'), backgroundColor: Colors.red),
+                                                  );
+                                                }
+                                              } finally {
+                                                setDialogState(() => updatingCharId = null);
+                                              }
+                                            },
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                if (character.species.isNotEmpty)
+                                  Text('物种：${character.species}', style: const TextStyle(fontSize: 13)),
+                                Text('固定外貌：${character.appearance}', style: const TextStyle(fontSize: 13)),
+                                Text('默认服装：${character.defaultOutfit}', style: const TextStyle(fontSize: 13)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('关闭'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('关闭'),
-          ),
-        ],
       ),
     );
   }
@@ -708,59 +814,85 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
 
     try {
       final pagesToDraw = _book.pages.where((p) => p.needIllustration).toList();
-      final totalSteps = (_book.characters.isNotEmpty ? _book.characters.length : 1) + pagesToDraw.length;
+      final hasCharacters = _book.characters.isNotEmpty;
+      final characterSteps = hasCharacters
+          ? _book.characters.length
+          : (pagesToDraw.isNotEmpty ? 1 : 0);
+      final remainingPages = hasCharacters
+          ? pagesToDraw
+          : (pagesToDraw.length > 1 ? pagesToDraw.sublist(1) : <BookPageItem>[]);
+      final totalSteps = characterSteps + remainingPages.length;
       int completedStep = 0;
 
       // ==========================================
-      // 第一阶段：先绘制角色定妆照 / 主角基准参考图
+      // 第一阶段：先重新绘制角色定妆照 / 主角基准参考图
       // ==========================================
-      if (_book.characters.isNotEmpty) {
-        final canUseReferences = _engine.supportsCharacterReference(
-          type: settings.imageType,
-          baseUrl: settings.imageBaseUrl,
-          model: settings.imageModel,
-        );
-
-        if (canUseReferences) {
-          for (int cIndex = 0; cIndex < _book.characters.length; cIndex++) {
-            final character = _book.characters[cIndex];
-            if (mounted) {
-              setState(() {
-                _batchProgressText =
-                    '【步骤 1/2 先绘制角色】\n正在重新绘制 ${character.name} 的定妆照 (${cIndex + 1}/${_book.characters.length})...';
-                _batchProgressValue = completedStep / totalSteps;
-              });
-            }
-
-            final image = await _engine.generateCharacterReference(
-              settings: settings,
-              style: style,
-              character: character,
-            );
-            if (image == null || image.isEmpty) {
-              throw StateError('${character.name} 定妆照生成失败');
-            }
-            character.referenceImageBase64 = image;
-            completedStep++;
-            await _storage.saveBook(_book);
+      if (hasCharacters) {
+        for (int cIndex = 0; cIndex < _book.characters.length; cIndex++) {
+          final character = _book.characters[cIndex];
+          if (mounted) {
+            setState(() {
+              _batchProgressText =
+                  '【步骤 1/2 先重新绘制角色定妆照】\n正在重新绘制 ${character.name} 的定妆照 (${cIndex + 1}/${_book.characters.length})...\n'
+                  '提示：角色定妆照用于锁定角色外貌与服装一致性';
+              _batchProgressValue = completedStep / totalSteps;
+            });
           }
+
+          final image = await _engine.generateCharacterReference(
+            settings: settings,
+            style: style,
+            character: character,
+          );
+          if (image == null || image.isEmpty) {
+            throw StateError('${character.name} 定妆照生成失败');
+          }
+          character.referenceImageBase64 = image;
+          completedStep++;
+          await _storage.saveBook(_book);
+          if (mounted) setState(() {});
         }
-      } else {
-        // 如果没有预设角色列表，先重置主角基准图
-        _book.protagonistRefImage = null;
+      } else if (pagesToDraw.isNotEmpty) {
+        // 对于无独立角色设定清单的老绘本，第1步先为故事绘制第1页主角基准图并锁定为定妆照
+        final firstPage = pagesToDraw.first;
+        if (mounted) {
+          setState(() {
+            _batchProgressText =
+                '【步骤 1/2 先重新绘制主角定妆照】\n正在生成主角基准定妆图并锁定角色外观...';
+            _batchProgressValue = completedStep / totalSteps;
+          });
+        }
+        final b64 = await _engine.generateIllustration(
+          settings: settings,
+          style: style,
+          page: firstPage,
+          referenceImageBase64: null,
+          characters: const [],
+        );
+        if (b64 != null && b64.isNotEmpty) {
+          firstPage.imageBase64 = b64;
+          firstPage.isPlaceholder = false;
+          firstPage.generationError = null;
+          _book.protagonistRefImage = b64;
+          completedStep++;
+          await _storage.saveBook(_book);
+          if (mounted) setState(() {});
+        } else {
+          throw StateError('主角基准图生成失败');
+        }
       }
 
       // ==========================================
       // 第二阶段：逐页生成全书绘本插画
       // ==========================================
       int failed = 0;
-      for (int i = 0; i < pagesToDraw.length; i++) {
-        final page = pagesToDraw[i];
+      for (int i = 0; i < remainingPages.length; i++) {
+        final page = remainingPages[i];
         if (mounted) {
           setState(() {
             _batchProgressText =
                 '【步骤 2/2 生成绘本插画】\n正在绘制：第 ${page.pageIndex + 1} 页 (${style.name})\n'
-                '进度：${i + 1} / ${pagesToDraw.length}';
+                '进度：${i + 1} / ${remainingPages.length}';
             _batchProgressValue = completedStep / totalSteps;
           });
         }
@@ -777,7 +909,6 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             page.imageBase64 = b64;
             page.isPlaceholder = false;
             page.generationError = null;
-            // 锁定第一页成功生成的插画作为后续无角色场景的主角基准参考图
             if (_book.characters.isEmpty && _book.protagonistRefImage == null) {
               _book.protagonistRefImage = b64;
             }
@@ -878,7 +1009,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
       appBar: AppBar(
         title: Text('📖 ${_book.title}'),
         actions: [
-          if (_book.characters.isNotEmpty)
+          if (_book.characters.isNotEmpty || _book.protagonistRefImage != null)
             IconButton(
               tooltip: '查看角色定妆照与固定设定',
               icon: const Icon(Icons.people_outline),
