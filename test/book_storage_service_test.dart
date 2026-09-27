@@ -89,4 +89,14 @@ void main() {
     expect((await storage.loadBooks()).single.title, 'Second');
     expect(await File('${dir.path}/book-1.json.bak').exists(), isTrue);
   });
+
+  test('notifies booksChangedNotifier on saveBook and deleteBook', () async {
+    final initialValue = BookStorageService.booksChangedNotifier.value;
+    await storage.saveBook(_book('Notify Test'));
+    expect(BookStorageService.booksChangedNotifier.value, initialValue + 1);
+
+    await storage.deleteBook('book-1');
+    expect(BookStorageService.booksChangedNotifier.value, initialValue + 2);
+    expect(await storage.loadBooks(), isEmpty);
+  });
 }

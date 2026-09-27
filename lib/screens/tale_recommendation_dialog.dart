@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../models/fairy_tale_catalog.dart';
-import 'create_book_screen.dart';
 
 class TaleRecommendationDialog extends StatefulWidget {
   const TaleRecommendationDialog({super.key});
@@ -91,17 +90,7 @@ class _TaleRecommendationDialogState extends State<TaleRecommendationDialog> {
                     return InkWell(
                       borderRadius: BorderRadius.circular(12),
                       onTap: () {
-                        Navigator.pop(context);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => CreateBookScreen(
-                              initialTitle: tale.title,
-                              initialSynopsis: tale.synopsis,
-                              initialStyleId: tale.recommendedStyle,
-                            ),
-                          ),
-                        );
+                        Navigator.pop(context, tale);
                       },
                       child: Container(
                         padding: const EdgeInsets.all(12),

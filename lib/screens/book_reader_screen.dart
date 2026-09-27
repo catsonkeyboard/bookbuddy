@@ -624,6 +624,249 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     }
   }
 
+  /// 重新生成全书插画（二次确认后执行：先重新绘制角色定妆照/基准参考图，再重新绘制全书各页插画）
+  Future<void> _startRegenerateAllIllustrations() async {
+    if (_isBatchDrawing || _isRegenerating) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.auto_fix_high, color: Color(0xFFD8A24A)),
+            SizedBox(width: 8),
+            Text('重新生成全书插画'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '确定要重新生成全书所有插画吗？',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _book.characters.isNotEmpty
+                  ? '• 步骤 1：重新生成 ${_book.characters.length} 位出场角色的全新定妆照（锁定角色外貌）\n'
+                    '• 步骤 2：使用新定妆照逐页重绘全书 ${_book.pages.length} 页插画\n'
+                    '⚠️ 注意：现有插画将被全新绘制的插画覆盖。'
+                  : '• 步骤 1：先重新绘制第 1 页插画并锁定为主角基准定妆图\n'
+                    '• 步骤 2：以该主角基准图逐页绘制全书其余插画，确保画风角色一致\n'
+                    '⚠️ 注意：现有插画将被全新绘制的插画覆盖。',
+              style: const TextStyle(fontSize: 13, height: 1.6, color: Colors.grey),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFD8A24A),
+              foregroundColor: Colors.black87,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('开始重新生成'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+
+    final settings = await _settingsService.loadSettings();
+    if (settings.imageApiKey.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ 请先前往设置中配置生图 API Key'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    final style = StyleCatalog.styles.firstWhere(
+      (s) => s.id == _book.styleId,
+      orElse: () => StyleCatalog.styles.first,
+    );
+
+    setState(() {
+      _isBatchDrawing = true;
+      _batchProgressText = '正在激活屏幕常亮保护，准备重新生成全书插画...';
+      _batchProgressValue = 0.0;
+    });
+
+    try {
+      await WakelockPlus.enable();
+    } catch (_) {}
+
+    try {
+      final pagesToDraw = _book.pages.where((p) => p.needIllustration).toList();
+      final totalSteps = (_book.characters.isNotEmpty ? _book.characters.length : 1) + pagesToDraw.length;
+      int completedStep = 0;
+
+      // ==========================================
+      // 第一阶段：先绘制角色定妆照 / 主角基准参考图
+      // ==========================================
+      if (_book.characters.isNotEmpty) {
+        final canUseReferences = _engine.supportsCharacterReference(
+          type: settings.imageType,
+          baseUrl: settings.imageBaseUrl,
+          model: settings.imageModel,
+        );
+
+        if (canUseReferences) {
+          for (int cIndex = 0; cIndex < _book.characters.length; cIndex++) {
+            final character = _book.characters[cIndex];
+            if (mounted) {
+              setState(() {
+                _batchProgressText =
+                    '【步骤 1/2 先绘制角色】\n正在重新绘制 ${character.name} 的定妆照 (${cIndex + 1}/${_book.characters.length})...';
+                _batchProgressValue = completedStep / totalSteps;
+              });
+            }
+
+            final image = await _engine.generateCharacterReference(
+              settings: settings,
+              style: style,
+              character: character,
+            );
+            if (image == null || image.isEmpty) {
+              throw StateError('${character.name} 定妆照生成失败');
+            }
+            character.referenceImageBase64 = image;
+            completedStep++;
+            await _storage.saveBook(_book);
+          }
+        }
+      } else {
+        // 如果没有预设角色列表，先重置主角基准图
+        _book.protagonistRefImage = null;
+      }
+
+      // ==========================================
+      // 第二阶段：逐页生成全书绘本插画
+      // ==========================================
+      int failed = 0;
+      for (int i = 0; i < pagesToDraw.length; i++) {
+        final page = pagesToDraw[i];
+        if (mounted) {
+          setState(() {
+            _batchProgressText =
+                '【步骤 2/2 生成绘本插画】\n正在绘制：第 ${page.pageIndex + 1} 页 (${style.name})\n'
+                '进度：${i + 1} / ${pagesToDraw.length}';
+            _batchProgressValue = completedStep / totalSteps;
+          });
+        }
+
+        try {
+          final b64 = await _engine.generateIllustration(
+            settings: settings,
+            style: style,
+            page: page,
+            referenceImageBase64: _book.characters.isEmpty ? _book.protagonistRefImage : null,
+            characters: _book.characters,
+          );
+          if (b64 != null && b64.isNotEmpty) {
+            page.imageBase64 = b64;
+            page.isPlaceholder = false;
+            page.generationError = null;
+            // 锁定第一页成功生成的插画作为后续无角色场景的主角基准参考图
+            if (_book.characters.isEmpty && _book.protagonistRefImage == null) {
+              _book.protagonistRefImage = b64;
+            }
+          } else {
+            throw StateError('生图接口未返回图片');
+          }
+        } catch (e) {
+          failed++;
+          page.isPlaceholder = true;
+          page.generationError = e.toString();
+        }
+
+        completedStep++;
+        await _storage.saveBook(_book);
+        if (mounted) setState(() {});
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              failed == 0 ? '🎉 全书插画已全部重新生成完毕！' : '全书重绘结束，其中 $failed 页失败，可单独重绘或补画。',
+            ),
+            backgroundColor: failed == 0 ? null : Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('重新生成插画异常: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      try {
+        await WakelockPlus.disable();
+      } catch (_) {}
+      if (mounted) {
+        setState(() => _isBatchDrawing = false);
+      }
+    }
+  }
+
+  /// 删除当前绘本并返回
+  Future<void> _confirmDeleteBook() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.delete_forever, color: Colors.redAccent),
+            SizedBox(width: 8),
+            Text('删除绘本'),
+          ],
+        ),
+        content: Text(
+          '确定要彻底删除绘本《${_book.title}》吗？\n所有已生成的插画及语音缓存都将被永久删除，此操作不可恢复。',
+          style: const TextStyle(fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('彻底删除'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+
+    await _audioPlayer.stop();
+    await _storage.deleteBook(_book.id);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已删除绘本《${_book.title}》')),
+      );
+      Navigator.pop(context);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final total = _book.pages.length;
@@ -749,6 +992,50 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                     : _startBatchDrawMissing,
               ),
             ),
+          // 6. 重新生成全书插画按钮
+          IconButton(
+            tooltip: '重新生成全书插画 (先绘制角色再绘制全书)',
+            icon: const Icon(Icons.auto_fix_high),
+            color: const Color(0xFFD8A24A),
+            onPressed: (_isBatchDrawing || _isRegenerating)
+                ? null
+                : _startRegenerateAllIllustrations,
+          ),
+          // 7. 更多操作菜单（包含删除绘本等）
+          PopupMenuButton<String>(
+            tooltip: '更多操作',
+            icon: const Icon(Icons.more_vert),
+            onSelected: (val) {
+              if (val == 'regen_all') {
+                _startRegenerateAllIllustrations();
+              } else if (val == 'delete_book') {
+                _confirmDeleteBook();
+              }
+            },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'regen_all',
+                child: Row(
+                  children: [
+                    Icon(Icons.auto_fix_high, size: 18, color: Color(0xFFD8A24A)),
+                    SizedBox(width: 8),
+                    Text('重新生成全书插画'),
+                  ],
+                ),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'delete_book',
+                child: Row(
+                  children: [
+                    Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+                    SizedBox(width: 8),
+                    Text('删除此绘本', style: TextStyle(color: Colors.redAccent)),
+                  ],
+                ),
+              ),
+            ],
+          ),
           const SizedBox(width: 8),
         ],
       ),

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -10,6 +11,9 @@ class BookStorageService {
   static const _legacyBooksKey = 'bookbuddy_saved_books';
   static const _migratedKey = 'bookbuddy_books_migrated_to_files';
   static final Map<String, Future<void>> _pendingSaves = {};
+
+  /// 全局绘本数据变更通知（新建保存、修改保存或删除时触发），用于通知书架列表即时刷新
+  static final ValueNotifier<int> booksChangedNotifier = ValueNotifier<int>(0);
 
   final Directory? _booksDirectory;
 
@@ -113,6 +117,7 @@ class BookStorageService {
     _pendingSaves[book.id] = save;
     try {
       await save;
+      booksChangedNotifier.value++;
     } finally {
       if (identical(_pendingSaves[book.id], save)) {
         _pendingSaves.remove(book.id);
@@ -175,5 +180,7 @@ class BookStorageService {
         await audioDir.delete(recursive: true);
       }
     } catch (_) {}
+
+    booksChangedNotifier.value++;
   }
 }

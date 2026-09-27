@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'models/book.dart';
+import 'models/fairy_tale_catalog.dart';
 import 'screens/book_reader_screen.dart';
 import 'screens/create_book_screen.dart';
 import 'screens/settings_screen.dart';
@@ -63,6 +64,19 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   void initState() {
     super.initState();
     _loadBooks();
+    BookStorageService.booksChangedNotifier.addListener(_onBooksChanged);
+  }
+
+  @override
+  void dispose() {
+    BookStorageService.booksChangedNotifier.removeListener(_onBooksChanged);
+    super.dispose();
+  }
+
+  void _onBooksChanged() {
+    if (mounted) {
+      _loadBooks();
+    }
   }
 
   Future<void> _loadBooks() async {
@@ -81,6 +95,56 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
           _loading = false;
           _errorMessage = '加载绘本数据失败: $e';
         });
+      }
+    }
+  }
+
+  Future<void> _confirmDeleteBook(PictureBook book) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.delete_forever, color: Colors.redAccent),
+            SizedBox(width: 8),
+            Text('删除绘本'),
+          ],
+        ),
+        content: Text(
+          '确定要彻底删除绘本《${book.title}》吗？\n所有已生成的插画及语音缓存都将被永久删除，此操作不可恢复。',
+          style: const TextStyle(fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('彻底删除'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+
+    try {
+      await _storage.deleteBook(book.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已删除绘本《${book.title}》')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('删除失败: $e'), backgroundColor: Colors.red),
+        );
       }
     }
   }
@@ -150,10 +214,22 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                     icon: const Text('🌟', style: TextStyle(fontSize: 16)),
                                     label: const Text('经典故事灵感', style: TextStyle(fontWeight: FontWeight.bold)),
                                     onPressed: () async {
-                                      await showDialog(
+                                      final selectedTale = await showDialog<FairyTaleItem?>(
                                         context: context,
                                         builder: (_) => const TaleRecommendationDialog(),
                                       );
+                                      if (selectedTale != null && context.mounted) {
+                                        await Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder: (_) => CreateBookScreen(
+                                              initialTitle: selectedTale.title,
+                                              initialSynopsis: selectedTale.synopsis,
+                                              initialStyleId: selectedTale.recommendedStyle,
+                                            ),
+                                          ),
+                                        );
+                                      }
                                       _loadBooks();
                                     },
                                   ),
@@ -285,7 +361,19 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                         ],
                                       ),
                                       subtitle: Text('$dateStr · ${b.pages.length} 页 · 画风: ${b.styleName}'),
-                                      trailing: const Icon(Icons.chevron_right),
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          IconButton(
+                                            tooltip: '删除绘本',
+                                            icon: const Icon(Icons.delete_outline, size: 20),
+                                            color: Colors.grey,
+                                            hoverColor: Colors.red.withOpacity(0.1),
+                                            onPressed: () => _confirmDeleteBook(b),
+                                          ),
+                                          const Icon(Icons.chevron_right),
+                                        ],
+                                      ),
                                       onTap: () async {
                                         await Navigator.push(
                                           context,

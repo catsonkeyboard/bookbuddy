@@ -558,9 +558,11 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
       await _storage.saveBook(currentBook);
 
       if (!mounted) return;
-      Navigator.pushReplacement(
+      // 绘本生成完成，移除所有中间创建页面，直接进入绘本阅读器。返回时直接回到主页作品库
+      Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (_) => BookReaderScreen(book: currentBook)),
+        (route) => route.isFirst,
       );
     } catch (e) {
       if (mounted) {

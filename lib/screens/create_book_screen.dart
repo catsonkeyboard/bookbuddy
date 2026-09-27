@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/fairy_tale_catalog.dart';
 import '../models/style_catalog.dart';
 import '../services/book_engine_service.dart';
 import '../services/settings_service.dart';
@@ -135,10 +136,17 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             onPressed: () async {
-              await showDialog(
+              final selected = await showDialog<FairyTaleItem?>(
                 context: context,
                 builder: (_) => const TaleRecommendationDialog(),
               );
+              if (selected != null && mounted) {
+                setState(() {
+                  _titleCtrl.text = selected.title;
+                  _textCtrl.text = selected.synopsis;
+                  _selectedStyleId = selected.recommendedStyle;
+                });
+              }
             },
           ),
         ],
