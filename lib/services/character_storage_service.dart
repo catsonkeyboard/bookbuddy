@@ -122,11 +122,14 @@ class CharacterStorageService {
       jsonEncode(cards.map((c) => c.toJson()).toList()),
       flush: true,
     );
+
+    var movedOriginal = false;
     try {
       if (await file.exists()) {
         if (_parse(await file.readAsString()) != null) {
           if (await backup.exists()) await backup.delete();
           await file.rename(backup.path);
+          movedOriginal = true;
         } else {
           await file.rename(
             '${file.path}.corrupt.${DateTime.now().microsecondsSinceEpoch}',
@@ -134,6 +137,12 @@ class CharacterStorageService {
         }
       }
       await temp.rename(file.path);
+    } catch (_) {
+      // 正式文件已改名为备份但新文件没落成时，把备份复制回来，避免主文件缺失。
+      if (movedOriginal && !await file.exists() && await backup.exists()) {
+        await backup.copy(file.path);
+      }
+      rethrow;
     } finally {
       if (await temp.exists()) await temp.delete();
     }
