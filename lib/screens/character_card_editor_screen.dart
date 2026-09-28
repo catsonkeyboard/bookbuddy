@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/app_settings.dart';
 import '../models/character_card.dart';
@@ -9,6 +11,7 @@ import '../models/style_catalog.dart';
 import '../services/book_engine_service.dart';
 import '../services/character_storage_service.dart';
 import '../services/settings_service.dart';
+import 'settings_screen.dart';
 
 /// 角色卡新建 / 编辑页。card 为空表示新建。
 class CharacterCardEditorScreen extends StatefulWidget {
@@ -32,9 +35,7 @@ class CharacterCardEditorScreen extends StatefulWidget {
 
 class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
   late final CharacterStorageService _storage;
-  // ignore: unused_field
   late final BookEngineService _engine;
-  // ignore: unused_field
   late final Future<AppSettings> Function() _loadSettings;
 
   /// 工作副本：编辑模式下是传入卡片的深拷贝，保存前不影响原对象。
@@ -53,9 +54,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
   CharacterKind _kind = CharacterKind.animal;
   String _styleId = 'watercolor';
 
-  // ignore: prefer_final_fields
   bool _busy = false;
-  // ignore: prefer_final_fields
   String _busyText = '';
 
   /// 本次会话刚生成的定妆图字节，优先于磁盘文件显示，避免图片缓存显示旧图。
@@ -132,6 +131,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
       _toast(error, error: true);
       return false;
     }
+    var anchorsCleared = false;
     final lookChanged = _lookOf(_card) != _savedLook;
     if (lookChanged && _card.anchorImagePaths.isNotEmpty) {
       final count = _card.anchorImagePaths.length;
@@ -161,11 +161,15 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
       }
       _card.anchorImagePaths.clear();
       _freshAnchors.clear();
+      anchorsCleared = true;
     }
     try {
       await _storage.saveCard(_card);
     } catch (e) {
-      _toast('保存失败: $e', error: true);
+      _toast(
+        anchorsCleared ? '保存失败: $e。定妆图已按确认清空，请重试保存。' : '保存失败: $e',
+        error: true,
+      );
       return false;
     }
     _isNew = false;
@@ -180,8 +184,99 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
     }
   }
 
+  /// 校验并保存 → 读设置 → 通道前置检查 → 生成 → 落盘并写回卡片映射。
   Future<void> _generateAnchor() async {
-    _toast('定妆图生成将在下一任务实现');
+    if (!await _save()) return;
+
+    final AppSettings settings;
+    try {
+      settings = await _loadSettings();
+    } catch (e) {
+      _toast('读取设置失败: $e', error: true);
+      return;
+    }
+    if (settings.imageApiKey.isEmpty) {
+      _toast('请先在设置中配置生图 API Key', error: true);
+      return;
+    }
+
+    final supportsReference = _engine.supportsCharacterReference(
+      type: settings.imageType,
+      baseUrl: settings.imageBaseUrl,
+      model: settings.imageModel,
+    );
+    if (!supportsReference) {
+      if (!mounted) return;
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('当前生图通道不支持参考图'),
+          content: const Text(
+            '定妆图只能按文字生成，后续绘本每页可能出现外貌不一致。'
+            '建议切换到 Gemini 图像模型（如 gemini-2.5-flash-image）或腾讯混元。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'settings'),
+              child: const Text('去设置'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'proceed'),
+              child: const Text('仍然生成'),
+            ),
+          ],
+        ),
+      );
+      if (choice == 'settings' && mounted) {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const SettingsScreen()),
+        );
+        return;
+      }
+      if (choice != 'proceed') return;
+    }
+
+    final style = StyleCatalog.styles.firstWhere((s) => s.id == _styleId);
+    final styleId = _styleId;
+    setState(() {
+      _busy = true;
+      _busyText = '正在绘制 ${_card.name} 的${style.name}定妆图...';
+    });
+    try {
+      await WakelockPlus.enable();
+    } catch (_) {
+      // 桌面 / 测试环境可能没有插件实现。
+    }
+    try {
+      final image = await _engine.generateCharacterReference(
+        settings: settings,
+        style: style,
+        character: _card.toBookCharacter(),
+      );
+      if (image == null || image.isEmpty) {
+        throw StateError('生图接口未返回图片');
+      }
+      final path = await _storage.saveAnchor(_card.id, styleId, image);
+      _card.anchorImagePaths[styleId] = path;
+      _freshAnchors[styleId] = base64Decode(
+        image.startsWith('data:')
+            ? image.substring(image.indexOf(',') + 1)
+            : image,
+      );
+      _toast('定妆图已保存，请检查外貌是否符合预期');
+    } catch (e) {
+      _toast('定妆图生成失败: $e', error: true);
+    } finally {
+      try {
+        await WakelockPlus.disable();
+      } catch (_) {}
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override
@@ -350,7 +445,13 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
     final fresh = _freshAnchors[_styleId];
     final Widget child;
     if (fresh != null) {
-      child = Image.memory(fresh, fit: BoxFit.contain);
+      child = Image.memory(
+        fresh,
+        fit: BoxFit.contain,
+        errorBuilder: (ctx, error, stack) => const Center(
+          child: Icon(Icons.broken_image_outlined, color: Colors.grey),
+        ),
+      );
     } else if (anchorPath == null) {
       child = const Center(
         child: Text('还没有这个画风的定妆图', style: TextStyle(color: Colors.grey)),
