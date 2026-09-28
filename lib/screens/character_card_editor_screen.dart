@@ -264,6 +264,8 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
       }
       final path = await _storage.saveAnchor(_card.id, styleId, image);
       _card.anchorImagePaths[styleId] = path;
+      // 同路径覆盖写入后，清掉图片缓存里的旧位图，否则列表页和重新打开的编辑页仍显示旧图。
+      await FileImage(await _storage.imageFile(path)).evict();
       _freshAnchors[styleId] = base64Decode(
         image.startsWith('data:')
             ? image.substring(image.indexOf(',') + 1)

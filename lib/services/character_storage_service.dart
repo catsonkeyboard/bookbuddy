@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
@@ -22,7 +21,22 @@ class CharacterStorageService {
 
   final Directory? _directory;
 
-  CharacterStorageService({Directory? directory}) : _directory = directory;
+  CharacterStorageService({this._directory});
+
+  /// 卡片 id 只能是单个目录名：非空、不含路径分隔符、不是 . 或 ..。
+  static bool isValidId(String id) =>
+      id.isNotEmpty &&
+      !id.contains('/') &&
+      !id.contains('\\') &&
+      id != '.' &&
+      id != '..';
+
+  /// 相对路径只能指向角色库目录内部：非空、不是绝对路径、任一段都不是 . 或 ..。
+  static bool isSafeRelativePath(String relativePath) =>
+      relativePath.isNotEmpty &&
+      !relativePath.startsWith('/') &&
+      !relativePath.contains('\\') &&
+      relativePath.split('/').every((s) => s.isNotEmpty && s != '.' && s != '..');
 
   Future<Directory> _root() async {
     final dir = _directory ??
@@ -43,7 +57,7 @@ class CharacterStorageService {
       return decoded
           .whereType<Map>()
           .map((m) => CharacterCard.fromJson(Map<String, dynamic>.from(m)))
-          .where((c) => c.id.isNotEmpty)
+          .where((c) => isValidId(c.id))
           .toList();
     } catch (_) {
       return null;
@@ -73,7 +87,9 @@ class CharacterStorageService {
   }
 
   Future<void> saveCard(CharacterCard card) async {
-    if (card.id.isEmpty) throw ArgumentError('Card id must not be empty');
+    if (!isValidId(card.id)) {
+      throw ArgumentError('Card id is not a valid directory name: ${card.id}');
+    }
     await _mutate((cards) {
       final index = cards.indexWhere((c) => c.id == card.id);
       if (index >= 0) {
@@ -85,6 +101,9 @@ class CharacterStorageService {
   }
 
   Future<void> deleteCard(String id) async {
+    if (!isValidId(id)) {
+      throw ArgumentError('Card id is not a valid directory name: $id');
+    }
     await _mutate((cards) => cards.removeWhere((c) => c.id == id));
     final dir = Directory('${(await _root()).path}/$id');
     if (await dir.exists()) await dir.delete(recursive: true);
@@ -96,14 +115,21 @@ class CharacterStorageService {
     String fileName,
     Uint8List bytes,
   ) async {
+    if (!isValidId(cardId)) {
+      throw ArgumentError('Card id is not a valid directory name: $cardId');
+    }
     final dir = Directory('${(await _root()).path}/$cardId');
     if (!await dir.exists()) await dir.create(recursive: true);
     await File('${dir.path}/$fileName').writeAsBytes(bytes, flush: true);
     return '$cardId/$fileName';
   }
 
-  Future<File> imageFile(String relativePath) async =>
-      File('${(await _root()).path}/$relativePath');
+  Future<File> imageFile(String relativePath) async {
+    if (!isSafeRelativePath(relativePath)) {
+      throw ArgumentError('Image path escapes the character library: $relativePath');
+    }
+    return File('${(await _root()).path}/$relativePath');
+  }
 
   Future<String?> readImageBase64(String relativePath) async {
     final file = await imageFile(relativePath);
@@ -117,6 +143,9 @@ class CharacterStorageService {
     String styleId,
     String base64Image,
   ) async {
+    if (!isValidId(cardId)) {
+      throw ArgumentError('Card id is not a valid directory name: $cardId');
+    }
     final raw = base64Image.startsWith('data:')
         ? base64Image.substring(base64Image.indexOf(',') + 1)
         : base64Image;
@@ -147,6 +176,9 @@ class CharacterStorageService {
 
   /// 删除卡片全部定妆图文件并清空映射（外貌设定变更时调用）。
   Future<void> clearAnchors(String cardId) async {
+    if (!isValidId(cardId)) {
+      throw ArgumentError('Card id is not a valid directory name: $cardId');
+    }
     final root = await _root();
     await _mutate((cards) {
       final index = cards.indexWhere((c) => c.id == cardId);

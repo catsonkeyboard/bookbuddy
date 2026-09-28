@@ -126,7 +126,13 @@ class _CharacterLibraryScreenState extends State<CharacterLibraryScreen> {
             child: Icon(Icons.broken_image_outlined, size: 40, color: Colors.grey),
           );
         }
-        return Image.file(file, fit: BoxFit.cover);
+        return Image.file(
+          file,
+          fit: BoxFit.cover,
+          errorBuilder: (ctx, error, stack) => const Center(
+            child: Icon(Icons.broken_image_outlined, size: 40, color: Colors.grey),
+          ),
+        );
       },
     );
   }

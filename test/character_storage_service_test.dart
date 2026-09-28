@@ -202,4 +202,40 @@ void main() {
     expect(await storage.loadCards(), isEmpty);
     expect(await Directory('${dir.path}/card_a').exists(), isFalse);
   });
+
+  test('含路径分隔符或 .. 的 id 被拒绝，不触碰文件系统', () async {
+    final sibling = Directory('${dir.path}/../bookbuddy-sibling-${dir.uri.pathSegments.where((s) => s.isNotEmpty).last}')
+      ..createSync(recursive: true);
+    addTearDown(() {
+      if (sibling.existsSync()) sibling.deleteSync(recursive: true);
+    });
+    final escaping = '../${sibling.uri.pathSegments.where((s) => s.isNotEmpty).last}';
+
+    expect(() => storage.saveCard(_card(escaping, '越界')), throwsArgumentError);
+    expect(() => storage.saveCard(_card('..', '越界')), throwsArgumentError);
+    expect(() => storage.saveCard(_card('a/b', '越界')), throwsArgumentError);
+    await expectLater(storage.deleteCard(escaping), throwsArgumentError);
+    await expectLater(
+      storage.writeImage(escaping, 'photo.jpg', Uint8List.fromList([1])),
+      throwsArgumentError,
+    );
+    expect(sibling.existsSync(), isTrue);
+  });
+
+  test('imageFile 拒绝逃出角色库目录的相对路径', () async {
+    await expectLater(storage.imageFile('../x.png'), throwsArgumentError);
+    await expectLater(storage.imageFile('card_a/../../x.png'), throwsArgumentError);
+    await expectLater(storage.imageFile('/etc/passwd'), throwsArgumentError);
+    expect(await storage.readImageBase64('card_a/photo.jpg'), isNull);
+  });
+
+  test('cards.json 里 id 非法的条目在读取时被丢弃', () async {
+    await storage.saveCard(_card('card_ok', '正常'));
+    final file = File('${dir.path}/cards.json');
+    final list = jsonDecode(await file.readAsString()) as List;
+    list.add({'id': '../evil', 'name': '坏', 'appearance': 'x'});
+    await file.writeAsString(jsonEncode(list), flush: true);
+    final cards = await storage.loadCards();
+    expect(cards.map((c) => c.id), ['card_ok']);
+  });
 }
