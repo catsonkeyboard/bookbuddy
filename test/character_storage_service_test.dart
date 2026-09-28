@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:bookbuddy/models/character_card.dart';
 import 'package:bookbuddy/services/character_storage_service.dart';
@@ -108,5 +109,97 @@ void main() {
     await storage.deleteCard('card_a');
     expect(CharacterStorageService.cardsChangedNotifier.value, before + 2);
     expect(await storage.loadCards(), isEmpty);
+  });
+
+  test('写入图片返回相对路径并可读回 base64', () async {
+    final bytes = Uint8List.fromList([1, 2, 3, 4]);
+    final relative = await storage.writeImage('card_a', 'photo.jpg', bytes);
+    expect(relative, 'card_a/photo.jpg');
+    expect(await File('${dir.path}/card_a/photo.jpg').exists(), isTrue);
+    expect(await storage.readImageBase64(relative), base64Encode(bytes));
+    expect(await storage.readImageBase64('card_a/missing.jpg'), isNull);
+    expect((await storage.imageFile(relative)).path, '${dir.path}/card_a/photo.jpg');
+  });
+
+  test('saveAnchor 按字节头选择扩展名并更新卡片映射', () async {
+    await storage.saveCard(_card('card_a', '豆豆'));
+    final png = base64Encode([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]);
+    final jpg = base64Encode([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]);
+
+    final pngPath = await storage.saveAnchor('card_a', 'watercolor', png);
+    final jpgPath = await storage.saveAnchor(
+      'card_a',
+      'anime',
+      'data:image/jpeg;base64,$jpg',
+    );
+    expect(pngPath, 'card_a/anchor_watercolor.png');
+    expect(jpgPath, 'card_a/anchor_anime.jpg');
+
+    final card = (await storage.loadCards()).single;
+    expect(card.anchorImagePaths, {
+      'watercolor': 'card_a/anchor_watercolor.png',
+      'anime': 'card_a/anchor_anime.jpg',
+    });
+    expect(await File('${dir.path}/card_a/anchor_anime.jpg').exists(), isTrue);
+  });
+
+  test('saveAnchor 同一画风换格式时删除旧文件', () async {
+    await storage.saveCard(_card('card_a', '豆豆'));
+    await storage.saveAnchor(
+      'card_a',
+      'watercolor',
+      base64Encode([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]),
+    );
+    await storage.saveAnchor(
+      'card_a',
+      'watercolor',
+      base64Encode([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0]),
+    );
+    expect(
+      await File('${dir.path}/card_a/anchor_watercolor.png').exists(),
+      isFalse,
+    );
+    expect(
+      await File('${dir.path}/card_a/anchor_watercolor.jpg').exists(),
+      isTrue,
+    );
+    expect(
+      (await storage.loadCards()).single.anchorImagePaths['watercolor'],
+      'card_a/anchor_watercolor.jpg',
+    );
+  });
+
+  test('saveAnchor 对不存在的卡片抛错且不留下文件', () async {
+    await expectLater(
+      storage.saveAnchor('card_missing', 'watercolor', base64Encode([1, 2])),
+      throwsStateError,
+    );
+    expect(
+      await File('${dir.path}/card_missing/anchor_watercolor.jpg').exists(),
+      isFalse,
+    );
+  });
+
+  test('clearAnchors 删除文件并清空映射', () async {
+    await storage.saveCard(_card('card_a', '豆豆'));
+    await storage.saveAnchor(
+      'card_a',
+      'watercolor',
+      base64Encode([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]),
+    );
+    await storage.clearAnchors('card_a');
+    expect((await storage.loadCards()).single.anchorImagePaths, isEmpty);
+    expect(
+      await File('${dir.path}/card_a/anchor_watercolor.png').exists(),
+      isFalse,
+    );
+  });
+
+  test('删除卡片连带删除其目录', () async {
+    await storage.saveCard(_card('card_a', '豆豆'));
+    await storage.writeImage('card_a', 'photo.jpg', Uint8List.fromList([1]));
+    await storage.deleteCard('card_a');
+    expect(await storage.loadCards(), isEmpty);
+    expect(await Directory('${dir.path}/card_a').exists(), isFalse);
   });
 }
