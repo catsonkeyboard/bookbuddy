@@ -6,23 +6,31 @@ import 'package:bookbuddy/services/character_storage_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// 在真实事件循环里执行会产生文件 IO / 网络的操作，随后回到测试时钟刷新界面。
+/// 在真实事件循环里执行会产生文件 IO / 网络的操作，随后交替「让出真实时间片」与
+/// 「冲刷一次 FakeAsync 微任务队列」，直到 [until] 成立或达到 [maxRounds]。
 ///
-/// `CharacterStorageService` 的读改写链路有好几跳真实文件 IO（读 cards.json →
-/// 改 → 写临时文件 → 改名备份 → 改名正式文件 → 通知监听者重新加载）。`pumpAndSettle()`
-/// 只按 UI 帧是否稳定来判断"是否结束"，并不知道背后还有未完成的磁盘 IO；而单次
-/// `runAsync` 内部的 `Future.delayed` 也只能让链路往前挪一跳——每一跳完成后的延续
-/// 是在 widget 树所在的 FakeAsync 测试时钟上排队的微任务，必须靠测试驱动在"让出
-/// 真实时间片"与"冲刷一次 FakeAsync 微任务队列"之间来回切换才能被逐跳取出执行。
-/// 所以这里把这两步拆成同级、反复交替的独立调用（各自一次 `runAsync`/`pump`），
-/// 而不是嵌套在同一个 `runAsync` 里，直到整条链路（含通知刷新）彻底跑完。
-Future<void> runIo(WidgetTester tester, Future<void> Function() body) async {
+/// 为什么必须交替而不能把两步嵌套在同一个 `runAsync` 里：`CharacterStorageService`
+/// 的读改写链路有好几跳真实文件 IO（读 cards.json → 改 → 写临时文件 → 改名备份 →
+/// 改名正式文件 → 通知监听者重新加载）。`pumpAndSettle()` 只按 UI 帧是否稳定来判断
+/// "是否结束"，并不知道背后还有未完成的磁盘 IO；每一跳完成后的延续都是在 widget 树
+/// 所在的 FakeAsync 测试时钟上排队的微任务，必须靠测试驱动在"让出真实时间片"
+/// （`runAsync` 里的 `Future.delayed`）与"冲刷一次 FakeAsync 微任务队列"
+/// （`pump()`）之间来回切换才能被逐跳取出执行；嵌套在同一个 `runAsync` 里时，这次
+/// 冲刷根本不会发生，链路会卡在第一跳。[until] 用于在调用方关心的状态已经出现时
+/// 提前退出，避免每次调用都不加区分地付出最坏情况下的完整轮数开销。
+Future<void> runIo(
+  WidgetTester tester,
+  Future<void> Function() body, {
+  bool Function()? until,
+  int maxRounds = 60,
+}) async {
   await tester.runAsync(body);
-  for (var i = 0; i < 60; i++) {
+  for (var i = 0; i < maxRounds; i++) {
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 30)),
     );
     await tester.pump();
+    if (until != null && until()) break;
   }
   await tester.pumpAndSettle();
 }
@@ -45,6 +53,9 @@ void main() {
         () => tester.pumpWidget(
           MaterialApp(home: CharacterLibraryScreen(storage: storage)),
         ),
+        // 加载完成后 loading 指示器会消失（无论最终是空状态、列表还是错误态）。
+        until: () =>
+            find.byType(CircularProgressIndicator).evaluate().isEmpty,
       );
 
   testWidgets('没有卡片时显示空状态', (tester) async {
@@ -94,7 +105,12 @@ void main() {
     expect(find.text('删除角色「豆豆」'), findsOneWidget);
     expect(find.text('角色卡和它的定妆图将被删除。已生成的绘本不受影响。'), findsOneWidget);
 
-    await runIo(tester, () => tester.tap(find.text('删除')));
+    await runIo(
+      tester,
+      () => tester.tap(find.text('删除')),
+      // 删除完成、列表刷新后会重新显示空状态文案。
+      until: () => find.text('还没有角色').evaluate().isNotEmpty,
+    );
     expect(find.text('豆豆'), findsNothing);
     expect(find.text('还没有角色'), findsOneWidget);
     expect(File('${dir.path}/cards.json').readAsStringSync(), '[]');
