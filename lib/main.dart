@@ -3,6 +3,8 @@ import 'package:intl/intl.dart';
 import 'models/book.dart';
 import 'models/fairy_tale_catalog.dart';
 import 'screens/book_reader_screen.dart';
+import 'screens/character_card_editor_screen.dart';
+import 'screens/character_library_screen.dart';
 import 'screens/create_book_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/tale_recommendation_dialog.dart';
@@ -156,6 +158,16 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         title: const Text('📖 BookBuddy 绘本工坊'),
         actions: [
           IconButton(
+            tooltip: '我的角色',
+            icon: const Icon(Icons.face_retouching_natural),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const CharacterLibraryScreen()),
+              );
+            },
+          ),
+          IconButton(
             tooltip: '模型与接口配置',
             icon: const Icon(Icons.settings),
             onPressed: () {
@@ -248,6 +260,72 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                         MaterialPageRoute(builder: (_) => const CreateBookScreen()),
                                       );
                                       _loadBooks();
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      // 角色卡引导
+                      Card(
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        color: const Color(0xFF23201B),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.face_retouching_natural, size: 54, color: Color(0xFFD8A24A)),
+                              const SizedBox(width: 20),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '给孩子做一个专属主角',
+                                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                    ),
+                                    SizedBox(height: 4),
+                                    Text(
+                                      '创建可复用的角色卡，之后每本绘本都能请他出场',
+                                      style: TextStyle(fontSize: 13, color: Colors.grey),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Row(
+                                children: [
+                                  OutlinedButton.icon(
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: const Color(0xFFD8A24A),
+                                      side: const BorderSide(color: Color(0xFFD8A24A)),
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    ),
+                                    icon: const Icon(Icons.people_outline, size: 18),
+                                    label: const Text('我的角色', style: TextStyle(fontWeight: FontWeight.bold)),
+                                    onPressed: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(builder: (_) => const CharacterLibraryScreen()),
+                                      );
+                                    },
+                                  ),
+                                  const SizedBox(width: 12),
+                                  ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFFD8A24A),
+                                      foregroundColor: Colors.black87,
+                                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                                    ),
+                                    icon: const Icon(Icons.add),
+                                    label: const Text('新建角色', style: TextStyle(fontWeight: FontWeight.bold)),
+                                    onPressed: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(builder: (_) => const CharacterCardEditorScreen()),
+                                      );
                                     },
                                   ),
                                 ],

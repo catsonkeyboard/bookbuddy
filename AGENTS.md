@@ -133,17 +133,21 @@ lib/
 ├── models/
 │   ├── app_settings.dart              # 全局配置模型 (LLM/Image/Fallback/MiniMax TTS)
 │   ├── book.dart                      # 绘本模型 (PictureBook, BookPageItem 包含 audioPath)
+│   ├── character_card.dart            # 角色卡模型 (跨书复用主角：性格/口头禅/按画风缓存的定妆图路径)
 │   ├── fairy_tale_catalog.dart        # 内置经典童话灵感库
 │   └── style_catalog.dart             # 艺术风格预设库 (水彩、皮克斯等)
 ├── services/
 │   ├── book_engine_service.dart       # 分镜大模型与跨接口生图核心引擎
 │   ├── book_storage_service.dart      # 绘本本地持久化存取服务
+│   ├── character_storage_service.dart # 角色库落盘 (bookbuddy_characters/：cards.json 元数据 + 图片文件)
 │   ├── settings_service.dart          # 本地加密/持久化配置管理服务
 │   └── tts_service.dart               # MiniMax 语音生成、解码与沙盒缓存管理服务
 └── screens/
     ├── create_book_screen.dart        # 绘本创作向导页 (故事输入/童话挑选/风格选择)
     ├── storyboard_review_screen.dart  # 分镜大纲预览、修改与批量生图控制页
     ├── book_reader_screen.dart        # 绘本翻页阅读器、单页朗读控制、单页插画重绘页
+    ├── character_library_screen.dart  # 角色库网格页
+    ├── character_card_editor_screen.dart # 角色卡新建/编辑与定妆图生成页
     ├── settings_screen.dart           # 模型接口、密钥及 TTS 伴读配置中心
     └── tale_recommendation_dialog.dart# 经典童话灵感弹窗
 ```

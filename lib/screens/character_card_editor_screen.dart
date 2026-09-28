@@ -239,6 +239,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
         return;
       }
       if (choice != 'proceed') return;
+      if (!mounted) return;
     }
 
     final style = StyleCatalog.styles.firstWhere((s) => s.id == _styleId);
