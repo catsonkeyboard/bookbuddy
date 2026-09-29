@@ -101,6 +101,19 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
   bool _isCardCharacter(BookCharacter character) =>
       _characterCardIds.contains(character.id);
 
+  /// 书内快照的物种 / 外貌 / 服装若已被用户改过，定妆照只属于本书，不写回卡片。
+  /// 没有对应的固定角色信息可比时（旧入口），沿用写回。
+  bool _lookMatchesCard(BookCharacter character) {
+    final pinned = widget.pinnedCharacters
+        .where((p) => p.card.id == character.id)
+        .toList();
+    if (pinned.isEmpty) return true;
+    final projected = pinned.first.card.toBookCharacter();
+    return character.species == projected.species &&
+        character.appearance == projected.appearance &&
+        character.defaultOutfit == projected.defaultOutfit;
+  }
+
   /// 首次落盘后把所用角色卡标记为「刚用过」；失败不影响绘本生成。
   Future<void> _touchCardsOnce() async {
     if (_touchedCards || _characterCardIds.isEmpty) return;
@@ -296,7 +309,7 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
         character.referenceImageBase64 = image;
         await _storage.saveBook(_currentDraft());
         await _touchCardsOnce();
-        if (_isCardCharacter(character)) {
+        if (_isCardCharacter(character) && _lookMatchesCard(character)) {
           await _writeBackAnchor(character.id, image);
         }
       }

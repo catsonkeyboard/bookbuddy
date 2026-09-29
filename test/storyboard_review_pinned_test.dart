@@ -102,6 +102,8 @@ void main() {
     WidgetTester tester, {
     required AppSettings settings,
     BookEngineService? engine,
+    List<BookCharacter>? initialCharacters,
+    List<PinnedCharacter> pinnedCharacters = const [],
   }) async {
     tester.view.physicalSize = const Size(1200, 1600);
     tester.view.devicePixelRatio = 1.0;
@@ -115,8 +117,9 @@ void main() {
           initialPages: [
             BookPageItem(pageIndex: 0, text: '豆豆出发了。', characterIds: ['card_dino1']),
           ],
-          initialCharacters: [dino().toBookCharacter()],
+          initialCharacters: initialCharacters ?? [dino().toBookCharacter()],
           settings: settings,
+          pinnedCharacters: pinnedCharacters,
           characterCardIds: const ['card_dino1'],
           characterStorage: charStorage,
           bookStorage: bookStorage,
@@ -159,6 +162,7 @@ void main() {
           .text('定妆照已保存。请检查角色外貌和服装，确认后再开始绘制故事页。')
           .evaluate()
           .isNotEmpty,
+      maxRounds: 120,
     );
 
     expect(
@@ -180,5 +184,50 @@ void main() {
     final book = jsonDecode(bookFiles.single.readAsStringSync()) as Map<String, dynamic>;
     expect(book['characterCardIds'], ['card_dino1']);
     expect((book['characters'] as List).single['referenceImageBase64'], pngBase64);
+  });
+
+  testWidgets('书内改过外貌的卡片角色重绘定妆照时不写回卡片', (tester) async {
+    await tester.runAsync(() => charStorage.saveCard(dino()));
+    final edited = dino().toBookCharacter()..appearance = '紫色毛绒恐龙';
+    final settings = AppSettings(
+      imageType: 'gemini',
+      imageApiKey: 'test-key',
+      imageModel: 'gemini-2.5-flash-image',
+    );
+    await pumpReview(
+      tester,
+      settings: settings,
+      engine: BookEngineService(dio: fakeGeminiImageDio(pngBase64)),
+      initialCharacters: [edited],
+      pinnedCharacters: [PinnedCharacter(card: dino())],
+    );
+
+    await runIo(
+      tester,
+      () => tester.tap(find.byTooltip('重新生成定妆照')),
+      until: () => find
+          .text('定妆照已保存。请检查角色外貌和服装，确认后再开始绘制故事页。')
+          .evaluate()
+          .isNotEmpty,
+      maxRounds: 120,
+    );
+
+    expect(
+      File('${charDir.path}/card_dino1/anchor_watercolor.png').existsSync(),
+      isFalse,
+    );
+    final card =
+        (jsonDecode(File('${charDir.path}/cards.json').readAsStringSync()) as List)
+            .single as Map<String, dynamic>;
+    expect(card['anchorImagePaths'], isEmpty);
+    expect(card['lastUsedAt'], isNotNull);
+
+    final bookFile = bookDir
+        .listSync()
+        .whereType<File>()
+        .singleWhere((f) => f.path.endsWith('.json'));
+    final book = jsonDecode(bookFile.readAsStringSync()) as Map<String, dynamic>;
+    expect((book['characters'] as List).single['referenceImageBase64'], pngBase64);
+    expect((book['characters'] as List).single['appearance'], '紫色毛绒恐龙');
   });
 }
