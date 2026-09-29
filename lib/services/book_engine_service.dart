@@ -5,12 +5,27 @@ import 'package:flutter/foundation.dart';
 
 import '../models/app_settings.dart';
 import '../models/book.dart';
+import '../models/character_card.dart';
 
 class StoryboardDraft {
   final List<BookCharacter> characters;
   final List<BookPageItem> pages;
 
   const StoryboardDraft({required this.characters, required this.pages});
+}
+
+/// 从角色库选中、要固定进本书的角色：卡片本体 + 当前画风的定妆图（可能为空）。
+/// photoBase64 留给拍照阶段使用，P1 恒为空。
+class PinnedCharacter {
+  final CharacterCard card;
+  final String? anchorBase64;
+  final String? photoBase64;
+
+  const PinnedCharacter({
+    required this.card,
+    this.anchorBase64,
+    this.photoBase64,
+  });
 }
 
 class _ImageReference {
@@ -47,7 +62,11 @@ class BookEngineService {
     required AppSettings settings,
     required String title,
     required String storyText,
+    List<PinnedCharacter> pinnedCharacters = const [],
   }) async {
+    if (pinnedCharacters.length > kMaxCharacterCardsPerBook) {
+      throw ArgumentError('最多只能选择 $kMaxCharacterCardsPerBook 张角色卡');
+    }
     final systemPrompt = '''
 你是一位资深儿童绘本分镜大师。请阅读完整故事，将故事整体改编并重构为 8 ~ 12 个连续生动的【绘本跨页镜头（Scenes）】。
 ## 绘本核心原则：
@@ -87,6 +106,9 @@ class BookEngineService {
 }
 角色档案列出所有需要跨页保持一致的角色，名字、物种和 ID 在全书保持一致。每页 characterIds 只列画面中实际出现的角色，群体成员要逐个列出。默认服装跨页保持不变，只有原故事明确换装时才填写 outfitOverrides，且说明服装颜色和细节。没有故事依据时不要添加鞋子等配饰。不能强行要求角色正面对镜头。
 ''';
+    final fullSystemPrompt = pinnedCharacters.isEmpty
+        ? systemPrompt
+        : '$systemPrompt${_pinnedPromptBlock(pinnedCharacters)}';
 
     final userPrompt =
         '''
@@ -99,7 +121,7 @@ $storyText
 
     final rawJson = await _callLlm(
       settings: settings,
-      systemPrompt: systemPrompt,
+      systemPrompt: fullSystemPrompt,
       userPrompt: userPrompt,
     );
 
@@ -189,7 +211,108 @@ $storyText
         );
       }
     }
+    _reconcilePinned(
+      characters: characters,
+      pages: pages,
+      pinned: pinnedCharacters,
+    );
     return StoryboardDraft(characters: characters, pages: pages);
+  }
+
+  /// 有固定角色时追加到系统提示词末尾的段落；没有则为空串。
+  String _pinnedPromptBlock(List<PinnedCharacter> pinned) {
+    if (pinned.isEmpty) return '';
+    String kindLabel(CharacterKind kind) => switch (kind) {
+          CharacterKind.human => '人类',
+          CharacterKind.animal => '动物',
+          CharacterKind.object => '物件',
+        };
+    String orBlank(String value, String fallback) =>
+        value.trim().isEmpty ? fallback : value.trim();
+    final lines = pinned.map((p) {
+      final c = p.card;
+      final projected = c.toBookCharacter();
+      return '- id: ${c.id}｜名字：${c.name}｜类型：${kindLabel(c.kind)}'
+          '｜物种：${orBlank(c.species, '（未填写）')}'
+          '｜外貌：${projected.appearance}'
+          '｜默认服装：${projected.defaultOutfit}'
+          '｜性格：${orBlank(c.personality, '（未填写）')}'
+          '｜口头禅：${orBlank(c.catchphrase, '（无）')}';
+    }).join('\n');
+    return '''
+
+【固定角色，必须原样使用】
+以下角色已经存在，必须使用给定的 id、名字、物种、外貌与默认服装，不得改名、不得重新设计外貌、不得更换物种：
+$lines
+要求：
+1. characters 中必须包含上述每个角色，id 原样输出（例如 ${pinned.first.card.id}）；可以另外新增配角（用 c1、c2 编号）。
+2. 故事需要主角时优先使用上述角色；每个固定角色至少出现在一个镜头的 characterIds 中。
+3. 口头禅要自然地出现在该角色至少一页的 text 里；性格要体现在 action 与 emotion 的描写中。
+''';
+  }
+
+  /// 卡片是唯一真相源：覆盖同 id 条目 → 合并大模型另造的同名角色 → 按名字补漏 → 无出场则报错。
+  void _reconcilePinned({
+    required List<BookCharacter> characters,
+    required List<BookPageItem> pages,
+    required List<PinnedCharacter> pinned,
+  }) {
+    if (pinned.isEmpty) return;
+    for (final p in pinned) {
+      final card = p.card;
+      final projected = card.toBookCharacter(referenceImageBase64: p.anchorBase64);
+
+      // 规则一：同 id 用卡片字段整体替换；不存在则插到最前。
+      final index = characters.indexWhere((c) => c.id == card.id);
+      if (index >= 0) {
+        characters[index] = projected;
+      } else {
+        characters.insert(0, projected);
+      }
+
+      // 规则二：大模型另造的同名角色合并到卡片 id，页面引用与换装一并改写。
+      final name = card.name.trim();
+      final duplicates = characters
+          .where((c) => c.id != card.id && c.name.trim() == name)
+          .map((c) => c.id)
+          .toList();
+      if (duplicates.isNotEmpty) {
+        characters.removeWhere((c) => duplicates.contains(c.id));
+        for (final page in pages) {
+          if (page.characterIds.any(duplicates.contains)) {
+            page.characterIds = {
+              for (final id in page.characterIds)
+                duplicates.contains(id) ? card.id : id,
+            }.toList();
+          }
+          for (final dup in duplicates) {
+            final outfit = page.outfitOverrides.remove(dup);
+            if (outfit != null && !page.outfitOverrides.containsKey(card.id)) {
+              page.outfitOverrides[card.id] = outfit;
+            }
+          }
+        }
+      }
+
+      // 规则三：没有任何页面列出它时，按名字扫描页面文字补入。
+      if (!pages.any((page) => page.characterIds.contains(card.id)) &&
+          name.isNotEmpty) {
+        for (final page in pages) {
+          final visual =
+              '${page.text} ${page.sceneAction} ${page.sceneEmotion} ${page.sceneComposition}';
+          if (visual.contains(name)) {
+            page.characterIds = [...page.characterIds, card.id];
+          }
+        }
+      }
+
+      // 规则四：仍然无出场，明确报错，不静默生成新主角。
+      if (!pages.any((page) => page.characterIds.contains(card.id))) {
+        throw StateError(
+          '角色卡「${card.name}」没有出现在任何分镜中。请在故事里写到它，或取消选择该角色卡。',
+        );
+      }
+    }
   }
 
   /// 组装默认的原生图提示词
