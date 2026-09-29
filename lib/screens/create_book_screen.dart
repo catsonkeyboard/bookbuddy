@@ -49,6 +49,7 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
   List<CharacterCard> _cards = [];
   bool _cardsLoading = true;
   final List<String> _selectedCardIds = [];
+  bool? _supportsReference;
 
   @override
   void initState() {
@@ -60,6 +61,7 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
     _loadSettings = widget.loadSettings ?? SettingsService().loadSettings;
     _characterStorage = widget.characterStorage ?? CharacterStorageService();
     _loadCards();
+    _probeImageChannel();
     CharacterStorageService.cardsChangedNotifier.addListener(_loadCards);
   }
 
@@ -83,6 +85,23 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
     } catch (_) {
       // 角色库读不出来不影响写故事，只是没有卡可选。
       if (mounted) setState(() => _cardsLoading = false);
+    }
+  }
+
+  /// 读一次设置，判断当前生图通道能否接收参考图；读不到就不提示。
+  Future<void> _probeImageChannel() async {
+    try {
+      final settings = await _loadSettings();
+      if (!mounted) return;
+      setState(() {
+        _supportsReference = _engine.supportsCharacterReference(
+          type: settings.imageType,
+          baseUrl: settings.imageBaseUrl,
+          model: settings.imageModel,
+        );
+      });
+    } catch (_) {
+      // 设置读取失败不阻塞创建页；生成时仍按实际配置处理。
     }
   }
 
@@ -116,7 +135,12 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       final path = card.anchorImagePaths[_selectedStyleId];
       final anchor =
           path == null ? null : await _characterStorage.readImageBase64(path);
-      pinned.add(PinnedCharacter(card: card, anchorBase64: anchor));
+      pinned.add(
+        PinnedCharacter(
+          card: card,
+          anchorBase64: (anchor == null || anchor.isEmpty) ? null : anchor,
+        ),
+      );
     }
     return pinned;
   }
@@ -431,7 +455,13 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                         );
                       }).toList(),
                     ),
-                    if (missingAnchor.isNotEmpty) ...[
+                    if (_selectedCardIds.isNotEmpty && _supportsReference == false) ...[
+                      const SizedBox(height: 8),
+                      const Text(
+                        '当前生图通道不支持参考图，角色卡的定妆图不会被使用，每页外貌可能不一致。建议在设置里切换到 Gemini 图像模型或腾讯混元。',
+                        style: TextStyle(fontSize: 12, color: Colors.orange),
+                      ),
+                    ] else if (missingAnchor.isNotEmpty) ...[
                       const SizedBox(height: 8),
                       Text(
                         '进入审核后会先为 ${missingAnchor.join('、')} 绘制该画风的定妆照',

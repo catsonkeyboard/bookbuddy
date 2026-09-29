@@ -250,15 +250,27 @@ $storyText
           '｜性格：${orBlank(c.personality, '（未填写）')}'
           '｜口头禅：${orBlank(c.catchphrase, '（无）')}';
     }).join('\n');
+    // 没有任何卡片填了口头禅或性格时，不要求大模型去体现它们。
+    final hasVoice = pinned.any(
+      (p) =>
+          p.card.catchphrase.trim().isNotEmpty ||
+          p.card.personality.trim().isNotEmpty,
+    );
+    final requirements = <String>[
+      'characters 中必须包含上述每个角色，id 原样输出（例如 ${pinned.first.card.id}）；可以另外新增配角（用 c1、c2 编号）。',
+      '故事需要主角时优先使用上述角色；每个固定角色至少出现在一个镜头的 characterIds 中。',
+      if (hasVoice) '口头禅要自然地出现在该角色至少一页的 text 里；性格要体现在 action 与 emotion 的描写中。',
+    ];
+    final numbered = [
+      for (var i = 0; i < requirements.length; i++) '${i + 1}. ${requirements[i]}',
+    ].join('\n');
     return '''
 
 【固定角色，必须原样使用】
 以下角色已经存在，必须使用给定的 id、名字、物种、外貌与默认服装，不得改名、不得重新设计外貌、不得更换物种：
 $lines
 要求：
-1. characters 中必须包含上述每个角色，id 原样输出（例如 ${pinned.first.card.id}）；可以另外新增配角（用 c1、c2 编号）。
-2. 故事需要主角时优先使用上述角色；每个固定角色至少出现在一个镜头的 characterIds 中。
-3. 口头禅要自然地出现在该角色至少一页的 text 里；性格要体现在 action 与 emotion 的描写中。
+$numbered
 ''';
   }
 
@@ -269,6 +281,8 @@ $lines
     required List<PinnedCharacter> pinned,
   }) {
     if (pinned.isEmpty) return;
+    // 空分镜交给调用方报「未能生成分镜」，不要误报成角色没出场。
+    if (pages.isEmpty) return;
     final pinnedIds = pinned.map((p) => p.card.id).toSet();
     for (final p in pinned) {
       final card = p.card;

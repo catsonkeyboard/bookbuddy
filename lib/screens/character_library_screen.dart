@@ -43,10 +43,17 @@ class _CharacterLibraryScreenState extends State<CharacterLibraryScreen> {
   Future<void> _load() async {
     try {
       final cards = await _storage.loadCards();
+      if (!mounted) return;
+      // 先渲染卡片，再统计出演次数；书架很大时不让角色库一直转圈。
+      setState(() {
+        _cards = cards;
+        _loading = false;
+        _errorMessage = null;
+      });
       final counts = <String, int>{};
       try {
         for (final book in await _bookStorage.loadBooks()) {
-          for (final id in book.characterCardIds) {
+          for (final id in book.characterCardIds.toSet()) {
             counts[id] = (counts[id] ?? 0) + 1;
           }
         }
@@ -54,12 +61,7 @@ class _CharacterLibraryScreenState extends State<CharacterLibraryScreen> {
         // 书架读不出来只影响「出演 N 本」，不影响角色库本身。
       }
       if (!mounted) return;
-      setState(() {
-        _cards = cards;
-        _bookCounts = counts;
-        _loading = false;
-        _errorMessage = null;
-      });
+      setState(() => _bookCounts = counts);
     } catch (e) {
       if (!mounted) return;
       setState(() {

@@ -97,6 +97,51 @@ void main() {
     expect(system, contains('默认服装：红色小围巾'));
   });
 
+  test('固定角色没有口头禅和性格时不要求大模型体现它们', () async {
+    final sent = <dynamic>[];
+    final engine = BookEngineService(
+      dio: fakeLlmDio({
+        'characters': [
+          {
+            'id': 'card_plain',
+            'name': '小满',
+            'species': '',
+            'isAnimal': false,
+            'appearance': '灰色鹅卵石',
+            'defaultOutfit': '',
+          },
+        ],
+        'groups': {},
+        'scenes': [
+          scene(text: '小满滚下山坡。', ids: ['card_plain']),
+        ],
+      }, sent),
+    );
+    await engine.createStoryboardDraft(
+      settings: openAiSettings(),
+      title: '小满',
+      storyText: '小满滚下山坡。',
+      pinnedCharacters: [
+        PinnedCharacter(
+          card: CharacterCard(
+            id: 'card_plain',
+            name: '小满',
+            kind: CharacterKind.object,
+            appearance: '灰色鹅卵石',
+            personality: '  ',
+            catchphrase: '',
+          ),
+        ),
+      ],
+    );
+    final system = sent.single['messages'][0]['content'] as String;
+    expect(system, contains('2. 故事需要主角时优先使用上述角色'));
+    expect(system, isNot(contains('口头禅要自然地出现')));
+    // 基础提示词里另有「3. 【画面动作…」，只检查固定角色段落内部。
+    final block = system.substring(system.indexOf('【固定角色，必须原样使用】'));
+    expect(block, isNot(contains('3. ')));
+  });
+
   test('没有固定角色时提示词不含固定角色段落', () async {
     final sent = <dynamic>[];
     final engine = BookEngineService(

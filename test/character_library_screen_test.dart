@@ -71,7 +71,11 @@ void main() {
           ),
         ),
         // 加载完成后 loading 指示器会消失（无论最终是空状态、列表还是错误态）。
-        until: () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        // 卡片先渲染、出演次数随后才到：等到列表带上「出演」字样（或空状态）才算加载完成。
+        until: () =>
+            (find.byType(CircularProgressIndicator).evaluate().isEmpty &&
+                find.textContaining('出演').evaluate().isNotEmpty) ||
+            find.text('还没有角色').evaluate().isNotEmpty,
       );
 
   testWidgets('没有卡片时显示空状态', (tester) async {
@@ -164,8 +168,20 @@ void main() {
           ),
         );
       }
+      // 同一本书里重复的 id 只算一次。
+      await bookStorage.saveBook(
+        PictureBook(
+          id: 'book-3',
+          title: '书 book-3',
+          styleId: 'watercolor',
+          styleName: '水彩童话',
+          pages: [BookPageItem(pageIndex: 0, text: '豆豆出发。')],
+          createdAt: DateTime.utc(2026, 9, 30),
+          characterCardIds: ['card_a', 'card_a'],
+        ),
+      );
     });
     await pumpLibrary(tester);
-    expect(find.text('动物 · 定妆图 0 张 · 出演 2 本'), findsOneWidget);
+    expect(find.text('动物 · 定妆图 0 张 · 出演 3 本'), findsOneWidget);
   });
 }

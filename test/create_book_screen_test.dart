@@ -1,8 +1,13 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:bookbuddy/models/app_settings.dart';
 import 'package:bookbuddy/models/character_card.dart';
 import 'package:bookbuddy/screens/create_book_screen.dart';
+import 'package:bookbuddy/screens/storyboard_review_screen.dart';
+import 'package:bookbuddy/services/book_engine_service.dart';
 import 'package:bookbuddy/services/character_storage_service.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -34,6 +39,26 @@ CharacterCard card(String id, String name, {Map<String, String>? anchors}) =>
       anchorImagePaths: anchors,
     );
 
+/// 伪造 OpenAI 兼容协议的分镜响应，并记录请求体。
+Dio fakeLlmDio(Map<String, dynamic> storyboard, List<dynamic> sent) => Dio()
+  ..interceptors.add(
+    InterceptorsWrapper(
+      onRequest: (options, handler) {
+        sent.add(options.data);
+        handler.resolve(
+          Response(
+            requestOptions: options,
+            data: {
+              'choices': [
+                {'message': {'content': jsonEncode(storyboard)}},
+              ],
+            },
+          ),
+        );
+      },
+    ),
+  );
+
 void main() {
   late Directory dir;
   late CharacterStorageService storage;
@@ -47,7 +72,11 @@ void main() {
     if (dir.existsSync()) dir.deleteSync(recursive: true);
   });
 
-  Future<void> pumpCreate(WidgetTester tester) async {
+  Future<void> pumpCreate(
+    WidgetTester tester, {
+    BookEngineService? engine,
+    AppSettings? settings,
+  }) async {
     tester.view.physicalSize = const Size(1000, 2000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -55,7 +84,19 @@ void main() {
     await runIo(
       tester,
       () => tester.pumpWidget(
-        MaterialApp(home: CreateBookScreen(characterStorage: storage)),
+        MaterialApp(
+          home: CreateBookScreen(
+            characterStorage: storage,
+            engine: engine,
+            loadSettings: () async =>
+                settings ??
+                AppSettings(
+                  imageType: 'gemini',
+                  imageApiKey: 'test-key',
+                  imageModel: 'gemini-2.5-flash-image',
+                ),
+          ),
+        ),
       ),
       until: () => find.text('👥 选择角色卡（可选，最多 3 张）').evaluate().isNotEmpty &&
           find.byType(CircularProgressIndicator).evaluate().isEmpty,
@@ -100,5 +141,83 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.widget<FilterChip>(find.widgetWithText(FilterChip, '豆豆')).selected, isFalse);
     expect(find.text('豆豆 · 豆豆 来啦'), findsNothing);
+  });
+
+  testWidgets('生图通道不支持参考图时提示定妆图不会被使用', (tester) async {
+    await tester.runAsync(() => storage.saveCard(card('card_a', '豆豆')));
+    await pumpCreate(tester, settings: AppSettings(imageApiKey: 'test-key'));
+    await tester.tap(find.widgetWithText(FilterChip, '豆豆'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('当前生图通道不支持参考图'), findsOneWidget);
+    expect(find.textContaining('进入审核后会先为'), findsNothing);
+  });
+
+  testWidgets('生成时把已选卡片的定妆图与 id 传给引擎和审核页', (tester) async {
+    final png = base64Encode([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]);
+    await tester.runAsync(() async {
+      await storage.saveCard(card('card_a', '豆豆'));
+      await storage.saveAnchor('card_a', 'watercolor', png);
+    });
+    final sent = <dynamic>[];
+    final engine = BookEngineService(
+      dio: fakeLlmDio({
+        'characters': [
+          {
+            'id': 'card_a',
+            'name': '豆豆',
+            'species': '',
+            'isAnimal': true,
+            'appearance': '外貌 豆豆',
+            'defaultOutfit': '',
+          },
+        ],
+        'groups': {},
+        'scenes': [
+          {
+            'text': '豆豆出发。',
+            'action': '豆豆走出家门',
+            'emotion': '',
+            'composition': '',
+            'characterIds': ['card_a'],
+            'outfitOverrides': {},
+          },
+        ],
+      }, sent),
+    );
+    await pumpCreate(
+      tester,
+      engine: engine,
+      settings: AppSettings(
+        llmType: 'openai',
+        llmBaseUrl: 'https://example.test',
+        llmApiKey: 'k',
+        llmModel: 'm',
+        imageType: 'gemini',
+        imageApiKey: 'test-key',
+        imageModel: 'gemini-2.5-flash-image',
+      ),
+    );
+    await tester.tap(find.widgetWithText(FilterChip, '豆豆'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, '可直接粘贴故事全文；若留空仅填书名，AI 将自动构思并续写完整童话...'),
+      '豆豆在雨天迷路了。',
+    );
+    await tester.pump();
+
+    await runIo(
+      tester,
+      () => tester.tap(find.text('🎬 分析故事并生成分镜 (进入审核)')),
+      until: () => find.byType(StoryboardReviewScreen).evaluate().isNotEmpty,
+      maxRounds: 120,
+    );
+
+    final review = tester.widget<StoryboardReviewScreen>(find.byType(StoryboardReviewScreen));
+    expect(review.characterCardIds, ['card_a']);
+    expect(review.pinnedCharacters.single.card.id, 'card_a');
+    expect(review.pinnedCharacters.single.anchorBase64, png);
+    expect(review.initialCharacters.single.id, 'card_a');
+    expect(review.initialCharacters.single.referenceImageBase64, png);
+    expect(sent.single['messages'][0]['content'] as String, contains('【固定角色，必须原样使用】'));
   });
 }
