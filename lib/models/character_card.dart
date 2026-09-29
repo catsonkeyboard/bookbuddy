@@ -57,21 +57,31 @@ class CharacterCard {
   bool get isAnimal => kind == CharacterKind.animal;
 
   /// 投影为书内快照。定妆图 base64 由调用方按画风读文件后传入。
+  /// 空服装按类型投影为明确描述，避免提示词里出现「默认服装：。」。
   BookCharacter toBookCharacter({String? referenceImageBase64}) {
     var projectedAppearance = appearance;
     if (kind == CharacterKind.object && defaultOutfit.trim().isEmpty) {
       projectedAppearance = '$appearance$kObjectAppearanceSuffix';
     }
+    final projectedOutfit = defaultOutfit.trim().isEmpty
+        ? _defaultOutfitFor(kind)
+        : defaultOutfit;
     return BookCharacter(
       id: id,
       name: name,
       species: species,
       isAnimal: isAnimal,
       appearance: projectedAppearance,
-      defaultOutfit: defaultOutfit,
+      defaultOutfit: projectedOutfit,
       referenceImageBase64: referenceImageBase64,
     );
   }
+
+  static String _defaultOutfitFor(CharacterKind kind) => switch (kind) {
+        CharacterKind.animal => '自然毛皮或羽毛，不穿人类服饰',
+        CharacterKind.object => '无服装，保持物件本来的外观',
+        CharacterKind.human => '简洁的日常服装',
+      };
 
   Map<String, dynamic> toJson() => {
         'id': id,

@@ -1,3 +1,4 @@
+import 'package:bookbuddy/models/book.dart';
 import 'package:bookbuddy/models/character_card.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -112,5 +113,64 @@ void main() {
 
   test('每本绘本角色卡上限为 3', () {
     expect(kMaxCharacterCardsPerBook, 3);
+  });
+
+  test('空服装按类型投影为明确的服装描述', () {
+    final animal = CharacterCard(
+      id: 'card_a',
+      name: '豆豆',
+      kind: CharacterKind.animal,
+      appearance: '绿色毛绒恐龙',
+    );
+    expect(animal.toBookCharacter().defaultOutfit, '自然毛皮或羽毛，不穿人类服饰');
+
+    final object = CharacterCard(
+      id: 'card_o',
+      name: '小满',
+      kind: CharacterKind.object,
+      appearance: '灰色鹅卵石',
+    );
+    expect(object.toBookCharacter().defaultOutfit, '无服装，保持物件本来的外观');
+    expect(object.toBookCharacter().appearance, endsWith(kObjectAppearanceSuffix));
+
+    final human = CharacterCard(
+      id: 'card_h',
+      name: '小明',
+      kind: CharacterKind.human,
+      appearance: '短黑发男孩',
+    );
+    expect(human.toBookCharacter().defaultOutfit, '简洁的日常服装');
+
+    animal.defaultOutfit = '红色小围巾';
+    expect(animal.toBookCharacter().defaultOutfit, '红色小围巾');
+  });
+
+  test('PictureBook.characterCardIds 往返保留，旧 JSON 缺键回退为空', () {
+    final book = PictureBook(
+      id: 'book-1',
+      title: '豆豆的雨天',
+      styleId: 'watercolor',
+      styleName: '水彩童话',
+      pages: [BookPageItem(pageIndex: 0, text: '豆豆出门了。')],
+      createdAt: DateTime.utc(2026, 9, 30),
+      characterCardIds: ['card_ab12cd34', 'card_ef56gh78'],
+    );
+    final restored = PictureBook.fromJson(book.toJson());
+    expect(restored.characterCardIds, ['card_ab12cd34', 'card_ef56gh78']);
+
+    final legacy = PictureBook.fromJson(book.toJson()..remove('characterCardIds'));
+    expect(legacy.characterCardIds, isEmpty);
+
+    final fresh = PictureBook(
+      id: 'book-2',
+      title: '无卡',
+      styleId: 'watercolor',
+      styleName: '水彩童话',
+      pages: const [],
+      createdAt: DateTime.utc(2026, 9, 30),
+    );
+    expect(fresh.characterCardIds, isEmpty);
+    fresh.characterCardIds.add('card_x');
+    expect(fresh.characterCardIds, ['card_x']);
   });
 }

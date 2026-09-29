@@ -7,6 +7,7 @@ class PictureBook {
   final DateTime createdAt;
   final List<BookCharacter> characters;
   String? protagonistRefImage; // 主角定妆照参考图（Base64），全书所有页面及单独重绘共用，锁定角色外貌
+  List<String> characterCardIds; // 本书使用的角色卡 id（书内角色仍是快照，卡片编辑不回溯）
 
   PictureBook({
     required this.id,
@@ -17,7 +18,8 @@ class PictureBook {
     required this.createdAt,
     this.characters = const [],
     this.protagonistRefImage,
-  });
+    List<String>? characterCardIds,
+  }) : characterCardIds = characterCardIds ?? [];
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -28,6 +30,7 @@ class PictureBook {
     'createdAt': createdAt.toIso8601String(),
     'characters': characters.map((c) => c.toJson()).toList(),
     'protagonistRefImage': protagonistRefImage,
+    'characterCardIds': characterCardIds,
   };
 
   factory PictureBook.fromJson(Map<String, dynamic> json) => PictureBook(
@@ -43,6 +46,9 @@ class PictureBook {
         .map((c) => BookCharacter.fromJson(c as Map<String, dynamic>))
         .toList(),
     protagonistRefImage: json['protagonistRefImage'],
+    characterCardIds: (json['characterCardIds'] as List<dynamic>? ?? [])
+        .map((id) => id.toString())
+        .toList(),
   );
 
   /// 已成功绘制的插画数量
