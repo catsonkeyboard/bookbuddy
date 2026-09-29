@@ -1,73 +1,144 @@
 # 📖 BookBuddy (绘本工坊)
 
-> 一款基于 AI 大语言模型与图像生成模型的跨平台沉浸式儿童绘本创作客户端。
+> 一款基于大语言模型、图像生成模型与神经语音模型的跨平台儿童绘本创作与阅读客户端。
 > 支持在 **macOS**、**Windows** 与 **Android 平板/手机** 上原生运行。
-
----
-
-## 🖼️ 应用预览
-
-<div align="center">
-  <img src="assets/images/preview.png" alt="BookBuddy 客户端界面" width="800" style="border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.3);" />
-</div>
 
 ---
 
 ## ✨ 核心特性
 
-- **多平台原生支持**：基于 Flutter 3 架构，一套代码覆盖 macOS、Windows、Android 平板、iOS 与 Web。
-- **绘本场景镜头重构 (Scene Chunking)**：基于资深分镜叙事算法，告别自然段琐碎切割，将完整童话重构为 8~12 幕紧凑连贯的跨页镜头，实现严格的**“一页一图、图文对应”**。
-- **生动的拟人化与人类微表情**：针对童话动物角色锁定双足站立体态与狡黠、坏笑、纯真等丰富人类心理微表情，避免写实动物违和感。
-- **全书角色外貌多模态锚定**：首幕自动锁定主角面部容貌、发型、体型，换装脱衣等情节动态服从场景，彻底杜绝角色漂移与三视图设定稿泄露。
-- **支持单页局部重绘**：在阅读器内浏览时，支持展示原生生图提示词并可任意修改细节或清空重写，一键单独定向重绘。
-- **多接口协议与多通道故障转移 (Failover)**：
-  - 支持 **Google Gemini / Imagen 3 官方原生协议**
-  - 支持 **OpenAI 兼容协议 (智谱 / DeepSeek / 自建网关)**
-  - 支持 **Anthropic Claude 协议**
-  - 支持主生图接口遇 429/503/限流时自动无缝降级到备用通道。
-- **BYOK 隐私与安全性**：所有 API Key 均在本地安全沙箱存储，不硬编码、不上传外部服务器。
+### 🎨 创作：从一段故事到一本绘本
+- **灵感与画风**：内置经典童话灵感库，可一键填入标题与梗概；提供水彩童话、3D 黏土定格、温馨彩铅、复古经典绘本、童趣蜡笔、日系动漫、国风水墨七种画风。
+- **分镜镜头重构 (Scene Chunking)**：大模型将完整故事重构为 8~12 幕紧凑连贯的跨页镜头，严格“一页一图、图文对应”，同时产出全书角色档案（名字、物种、固定外貌、默认服装）与每页出场名单。
+- **分镜审核页**：生图前可逐页修改正文、画面动作、神态与构图，开关单页插画，增删和编辑角色设定；引擎会先为每个出场角色绘制定妆照，用户确认外貌后再开始绘制故事页。
+- **角色外貌跨页锁定**：每页生图时把本页出场角色的定妆照逐张作为参考图注入，配合固定外貌与服装约束，杜绝跨页“换脸”；仅在剧本明确换装时才通过换装覆盖改变服饰。
+- **断点续画与逐页落盘**：每生成一页立即写入本地，断网、熄屏或强杀后重开即可从未完成的页面继续。
+
+### 🧸 角色卡：可复用的专属主角（新）
+- **独立角色库**：首页「我的角色」进入角色库，手动创建属于孩子的固定主角：名字、类型（人类 / 动物 / 物件）、物种或物件名、外貌锚定描述、默认服装、性格、口头禅。
+- **按画风生成并缓存定妆图**：同一张卡可为不同画风各生成一张定妆图，全部落盘保存，重启后仍在；修改外貌相关设定时会先确认再清空旧定妆图。
+- **生图通道前置检查**：当前生图配置不支持参考图（如 Imagen 3、DALL-E 3）时会提前提示并引导切换，避免“不报错但每页换脸”。
+- **编辑不回溯旧书**：角色卡的修改只影响之后新建的绘本，已生成的绘本保持原样。
+- 本版本提供角色库的创建与管理；“选择角色卡写入自定义故事并生成绘本”“拍玩具照片自动生成角色卡”将在后续版本推出。
+
+### 🎙️ 语音伴读
+- **MiniMax 神经语音**：接入 MiniMax T2A v2，为儿童故事定制的温柔慢速人声（默认 0.85x），自然换气停顿。
+- **按页本地缓存**：每页音频独立合成并落盘为 mp3，一次合成后翻页零延迟、离线可听。
+- **智能连读**：当前页播完自动平滑翻页；支持单页重新合成并覆盖缓存。
+
+### 📚 阅读与重绘
+- **沉浸式翻页阅读**：大图画幅展示，配合朗读控制。
+- **单页局部重绘**：查看并修改该页的原生生图提示词，一键定向重绘，不影响其他页面。
+- **补画与全书重绘**：未完成或失败的插画可一键补画，也可整本重新生成；过程中保持屏幕常亮并逐页保存。
+- **角色定妆照管理**：在阅读器内查看全书角色档案，重绘某个角色的定妆照。
+
+### ⚙️ 模型接入与安全存储
+- **多套配置随时切换**：文本模型与生图模型均支持保存多套配置（Profile）并一键切换激活。
+- **文本模型 (LLM)**：Google Gemini 官方原生协议、OpenAI 兼容协议（GPT-4o、DeepSeek、自建网关）、Anthropic Claude 协议。
+- **生图模型 (Image)**：Google Imagen 3、Gemini 多模态图像模型、智谱 GLM 生图、腾讯 TokenHub 混元 3.5、OpenAI DALL-E 3 及兼容网关。其中 Gemini 图像模型与混元 3.5 支持传入角色定妆照作为参考图。
+- **双通道故障转移 (Failover)**：主生图通道遇 429 / 503 / 内容过滤时自动降级到备用通道；备用通道不支持参考图时会停止降级并明确提示，而不是悄悄丢掉角色一致性。
+- **BYOK 与本地沙盒**：所有 API Key 只存于本地安全存储，不硬编码、不上传；绘本以独立 JSON 文件保存并带备份恢复，音频与角色库图片均为本地文件。
 
 ---
 
 ## 🚀 快速开始
 
-### 依赖环境
-- Flutter SDK >= 3.13.0
-- Dart SDK >= 3.1.0
+### 环境要求
+- **Flutter 3.47.5**（stable channel）
+- **Dart 3.13.4**
+- Android 打包需要 Android SDK 与 JDK 17
 
-### 运行应用
+### 配置国内镜像（必须）
+国内网络直连 `pub.dev` 极易超时，执行任何 Flutter 命令前先注入镜像环境变量。
+
+macOS / Linux（可写入 `~/.zshrc` 或 `~/.bashrc`）：
+
+```bash
+export PUB_HOSTED_URL="https://pub.flutter-io.cn"
+export FLUTTER_STORAGE_BASE_URL="https://storage.flutter-io.cn"
+export PATH="$HOME/development/flutter/bin:$PATH"
+```
+
+Windows PowerShell：
+
+```powershell
+$env:PUB_HOSTED_URL = "https://pub.flutter-io.cn"
+$env:FLUTTER_STORAGE_BASE_URL = "https://storage.flutter-io.cn"
+```
+
+### 获取依赖并运行
 
 ```bash
 # 获取依赖
 flutter pub get
 
-# 在 macOS 原生桌面端运行
+# macOS 桌面端
 flutter run -d macos
 
-# 在已连接的 Android 平板或模拟器运行
+# Windows 桌面端
+flutter run -d windows
+
+# 已连接的 Android 平板 / 手机 / 模拟器
 flutter run -d android
+```
+
+### 静态检查与测试
+
+```bash
+flutter analyze
+flutter test
 ```
 
 ### 📱 Android APK 一键打包
 
-项目根目录下提供了自动化打包脚本 `build_apk.sh`：
+脚本会自动配置国内镜像、清理终端与 Gradle 的代理设置、检测 Flutter 与 Android SDK，并编译 **ARM64** APK。
+
+macOS / Linux / Git Bash（`build_apk.sh`）：
 
 ```bash
-# 1. 默认一键打包 Debug APK (适合日常测试，完成后提示直接安装)
+# Debug 版本（默认，完成后可直接安装到已连接设备）
 ./build_apk.sh
 
-# 2. 一键打包 Release 正式版 APK (体积更小，运行更流畅)
+# Release 正式版本
 ./build_apk.sh release
+
+# 静默模式（追加 -q）
+./build_apk.sh -q
+./build_apk.sh release -q
+```
+
+Windows PowerShell（`build_apk.ps1`）：
+
+```powershell
+# Debug 版本（默认）
+.\build_apk.ps1
+
+# Release 版本
+.\build_apk.ps1 -Release
+
+# 静默模式 / 只编译不安装
+.\build_apk.ps1 -Release -Quiet -NoInstall
+```
+
+APK 输出路径：`build/app/outputs/flutter-apk/app-debug.apk` 或 `app-release.apk`。Windows 脚本默认在用户目录下查找 Flutter SDK、Android SDK 与 JDK 17，其他安装位置可通过 `PATH`、`ANDROID_HOME`、`JAVA_HOME` 指定。Release 版本用于正式发布前，请确认 Android 签名配置。
+
+### 🖥️ 桌面端打包
+
+```bash
+flutter build macos --release
+flutter build windows --release
 ```
 
 ---
 
 ## ⚙️ 模型配置说明
 
-启动应用后，点击右上角齿轮图标进入 **「模型与接口配置」** 中心，填入你的 API Key 即可开始创作：
-- **文本模型 (LLM)**：可选用 Google Gemini 官方原生、OpenAI 兼容或 Claude。
-- **生图模型 (Image)**：推荐使用 Google Imagen 3 或兼容生图模型。
-- **备用生图接口 (Failover)**：可选配置备用模型，遇额度受限时自动保底。
+启动应用后，点击右上角齿轮图标进入 **「模型与接口配置」**，填入 API Key 即可开始创作：
+
+- **文本模型 (LLM)**：在多套配置中选择并激活一套（Gemini / OpenAI 兼容 / DeepSeek / Claude），填写 Base URL、模型名与 Key。
+- **生图模型 (Image)**：同样支持多套配置。若要使用角色卡定妆图和跨页角色一致性，请激活 **Gemini 多模态图像模型** 或 **腾讯混元 3.5**；Imagen 3 与 DALL-E 3 不接收参考图。
+- **备用生图接口 (Failover)**：可选，主通道限流或被过滤时自动保底。
+- **语音伴读 (MiniMax)**：填写 MiniMax API Key 与 Group ID，选择音色（推荐 `audiobook_female_1` / `audiobook_female_2`）与语速。
 
 ---
 
