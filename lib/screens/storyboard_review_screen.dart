@@ -8,6 +8,7 @@ import '../models/app_settings.dart';
 import '../models/book.dart';
 import '../services/book_engine_service.dart';
 import '../services/book_storage_service.dart';
+import '../services/character_storage_service.dart';
 import 'book_reader_screen.dart';
 
 class StoryboardReviewScreen extends StatefulWidget {
@@ -17,6 +18,15 @@ class StoryboardReviewScreen extends StatefulWidget {
   final List<BookCharacter> initialCharacters;
   final AppSettings settings;
 
+  /// 从创建页带来的固定角色（含卡片本体）；P1 只保存，P3 拍照阶段用它取照片。
+  final List<PinnedCharacter> pinnedCharacters;
+
+  /// 本书使用的角色卡 id；用来判断哪些书内角色来自角色卡。
+  final List<String> characterCardIds;
+  final CharacterStorageService? characterStorage;
+  final BookEngineService? engine;
+  final BookStorageService? bookStorage;
+
   const StoryboardReviewScreen({
     super.key,
     required this.title,
@@ -24,6 +34,11 @@ class StoryboardReviewScreen extends StatefulWidget {
     required this.initialPages,
     this.initialCharacters = const [],
     required this.settings,
+    this.pinnedCharacters = const [],
+    this.characterCardIds = const [],
+    this.characterStorage,
+    this.engine,
+    this.bookStorage,
   });
 
   @override
@@ -40,12 +55,19 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
   late final DateTime _createdAt;
   String? _protagonistRef;
 
-  final BookEngineService _engine = BookEngineService();
-  final BookStorageService _storage = BookStorageService();
+  late final BookEngineService _engine;
+  late final BookStorageService _storage;
+  late final CharacterStorageService _characterStorage;
+  late final List<String> _characterCardIds;
+  bool _touchedCards = false;
 
   @override
   void initState() {
     super.initState();
+    _engine = widget.engine ?? BookEngineService();
+    _storage = widget.bookStorage ?? BookStorageService();
+    _characterStorage = widget.characterStorage ?? CharacterStorageService();
+    _characterCardIds = List.of(widget.characterCardIds);
     // 深拷贝以允许在界面编辑
     _pages = widget.initialPages
         .map((p) => BookPageItem.fromJson(p.toJson()))
@@ -73,7 +95,56 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
     characters: _characters,
     createdAt: _createdAt,
     protagonistRefImage: _protagonistRef,
+    characterCardIds: _characterCardIds,
   );
+
+  bool _isCardCharacter(BookCharacter character) =>
+      _characterCardIds.contains(character.id);
+
+  /// 首次落盘后把所用角色卡标记为「刚用过」；失败不影响绘本生成。
+  Future<void> _touchCardsOnce() async {
+    if (_touchedCards || _characterCardIds.isEmpty) return;
+    _touchedCards = true;
+    try {
+      await _characterStorage.touchLastUsed(_characterCardIds);
+    } catch (_) {}
+  }
+
+  /// 把新定妆照按当前画风写回角色卡并清掉图片缓存；失败只提示，不阻断。
+  Future<void> _writeBackAnchor(String cardId, String image) async {
+    try {
+      final path = await _characterStorage.saveAnchor(
+        cardId,
+        widget.style.id,
+        image,
+      );
+      await FileImage(await _characterStorage.imageFile(path)).evict();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('定妆照已生成，但写回角色卡失败：$e'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
+  }
+
+  Widget _cardBadge() => Container(
+        margin: const EdgeInsets.only(left: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: const Color(0xFFD8A24A).withValues(alpha: 0.6),
+          ),
+        ),
+        child: const Text(
+          '角色卡',
+          style: TextStyle(fontSize: 10, color: Color(0xFFD8A24A)),
+        ),
+      );
 
   void _editCharacter(BookCharacter character, {bool isNew = false}) {
     final nameCtrl = TextEditingController(text: character.name);
@@ -85,13 +156,25 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
-          title: Text('编辑角色：${character.name}'),
+          title: Text(
+            _isCardCharacter(character)
+                ? '编辑角色：${character.name}（来自角色卡）'
+                : '编辑角色：${character.name}',
+          ),
           content: SizedBox(
             width: 520,
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (_isCardCharacter(character))
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        '此处修改仅影响本书，不会改动角色卡。',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ),
                   TextField(
                     controller: nameCtrl,
                     decoration: const InputDecoration(labelText: '角色名'),
@@ -212,6 +295,10 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
         }
         character.referenceImageBase64 = image;
         await _storage.saveBook(_currentDraft());
+        await _touchCardsOnce();
+        if (_isCardCharacter(character)) {
+          await _writeBackAnchor(character.id, image);
+        }
       }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -485,6 +572,7 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
       // 2. 草稿预先落盘（保证哪怕遇到硬件强杀，分镜文本和基本信息绝不丢失）
       var currentBook = _currentDraft();
       await _storage.saveBook(currentBook);
+      await _touchCardsOnce();
 
       // 计算还需要绘制的页数和已经完成的页数（支持断点续画）
       int alreadyCompleted = _pages
@@ -792,11 +880,24 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
                                             crossAxisAlignment:
                                                 CrossAxisAlignment.start,
                                             children: [
-                                              Text(
-                                                character.name,
-                                                style: const TextStyle(
-                                                  fontWeight: FontWeight.bold,
-                                                ),
+                                              Row(
+                                                children: [
+                                                  Flexible(
+                                                    child: Text(
+                                                      character.name,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: const TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  if (_isCardCharacter(
+                                                    character,
+                                                  ))
+                                                    _cardBadge(),
+                                                ],
                                               ),
                                               Text(
                                                 character.appearance,
