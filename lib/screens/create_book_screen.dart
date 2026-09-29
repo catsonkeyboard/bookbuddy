@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/app_settings.dart';
+import '../models/character_card.dart';
 import '../models/fairy_tale_catalog.dart';
 import '../models/style_catalog.dart';
 import '../services/book_engine_service.dart';
+import '../services/character_storage_service.dart';
 import '../services/settings_service.dart';
+import 'character_library_screen.dart';
 import 'storyboard_review_screen.dart';
 import 'tale_recommendation_dialog.dart';
 
@@ -12,12 +16,18 @@ class CreateBookScreen extends StatefulWidget {
   final String? initialTitle;
   final String? initialSynopsis;
   final String? initialStyleId;
+  final CharacterStorageService? characterStorage;
+  final BookEngineService? engine;
+  final Future<AppSettings> Function()? loadSettings;
 
   const CreateBookScreen({
     super.key,
     this.initialTitle,
     this.initialSynopsis,
     this.initialStyleId,
+    this.characterStorage,
+    this.engine,
+    this.loadSettings,
   });
 
   @override
@@ -32,8 +42,13 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
   bool _isProcessing = false;
   String _statusText = '';
 
-  final BookEngineService _engine = BookEngineService();
-  final SettingsService _settingsService = SettingsService();
+  late final BookEngineService _engine;
+  late final Future<AppSettings> Function() _loadSettings;
+  late final CharacterStorageService _characterStorage;
+
+  List<CharacterCard> _cards = [];
+  bool _cardsLoading = true;
+  final List<String> _selectedCardIds = [];
 
   @override
   void initState() {
@@ -41,13 +56,69 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
     _titleCtrl = TextEditingController(text: widget.initialTitle ?? '');
     _textCtrl = TextEditingController(text: widget.initialSynopsis ?? '');
     _selectedStyleId = widget.initialStyleId ?? 'watercolor';
+    _engine = widget.engine ?? BookEngineService();
+    _loadSettings = widget.loadSettings ?? SettingsService().loadSettings;
+    _characterStorage = widget.characterStorage ?? CharacterStorageService();
+    _loadCards();
+    CharacterStorageService.cardsChangedNotifier.addListener(_loadCards);
   }
 
   @override
   void dispose() {
+    CharacterStorageService.cardsChangedNotifier.removeListener(_loadCards);
     _titleCtrl.dispose();
     _textCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadCards() async {
+    try {
+      final cards = await _characterStorage.loadCards();
+      if (!mounted) return;
+      setState(() {
+        _cards = cards;
+        _selectedCardIds.removeWhere((id) => !cards.any((c) => c.id == id));
+        _cardsLoading = false;
+      });
+    } catch (_) {
+      // 角色库读不出来不影响写故事，只是没有卡可选。
+      if (mounted) setState(() => _cardsLoading = false);
+    }
+  }
+
+  void _toggleCard(CharacterCard card) {
+    if (_selectedCardIds.contains(card.id)) {
+      setState(() => _selectedCardIds.remove(card.id));
+      return;
+    }
+    if (_selectedCardIds.length >= kMaxCharacterCardsPerBook) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('每本绘本最多选择 $kMaxCharacterCardsPerBook 张角色卡')),
+      );
+      return;
+    }
+    setState(() => _selectedCardIds.add(card.id));
+  }
+
+  List<CharacterCard> get _selectedCards => [
+        for (final id in _selectedCardIds) _cards.firstWhere((c) => c.id == id),
+      ];
+
+  /// 已选卡片里缺少当前画风定妆图的名字，用于提示「进入审核后会先补画」。
+  List<String> get _cardsMissingAnchor => [
+        for (final card in _selectedCards)
+          if (!card.anchorImagePaths.containsKey(_selectedStyleId)) card.name,
+      ];
+
+  Future<List<PinnedCharacter>> _buildPinned() async {
+    final pinned = <PinnedCharacter>[];
+    for (final card in _selectedCards) {
+      final path = card.anchorImagePaths[_selectedStyleId];
+      final anchor =
+          path == null ? null : await _characterStorage.readImageBase64(path);
+      pinned.add(PinnedCharacter(card: card, anchorBase64: anchor));
+    }
+    return pinned;
   }
 
   Future<void> _startGenerate() async {
@@ -60,7 +131,8 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       return;
     }
 
-    final settings = await _settingsService.loadSettings();
+    final settings = await _loadSettings();
+    if (!mounted) return;
     if (settings.llmApiKey.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -80,10 +152,12 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       final finalTitle = title.isNotEmpty
           ? title
           : (text.length > 20 ? text.substring(0, 20) : text);
+      final pinned = await _buildPinned();
       final draft = await _engine.createStoryboardDraft(
         settings: settings,
         title: finalTitle,
         storyText: text.isNotEmpty ? text : finalTitle,
+        pinnedCharacters: pinned,
       );
 
       if (draft.pages.isEmpty) {
@@ -105,9 +179,25 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
             initialPages: draft.pages,
             initialCharacters: draft.characters,
             settings: settings,
+            pinnedCharacters: pinned,
+            characterCardIds: List.of(_selectedCardIds),
           ),
         ),
       );
+    } on StateError catch (e) {
+      // 对账失败：角色卡没有出场等，原文提示，停留在创建页。
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message), backgroundColor: Colors.red),
+        );
+      }
+    } on ArgumentError catch (e) {
+      // 角色卡数量或重名等前置校验失败，原文提示，停留在创建页。
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${e.message}'), backgroundColor: Colors.red),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -119,8 +209,83 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
     }
   }
 
+  Widget _buildCardPicker() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '👥 选择角色卡（可选，最多 $kMaxCharacterCardsPerBook 张）',
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 8),
+        if (_cardsLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          )
+        else if (_cards.isEmpty)
+          Row(
+            children: [
+              const Text(
+                '还没有角色卡。',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              TextButton(
+                onPressed: () async {
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => CharacterLibraryScreen(
+                        storage: _characterStorage,
+                      ),
+                    ),
+                  );
+                },
+                child: const Text('去创建角色'),
+              ),
+            ],
+          )
+        else ...[
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final card in _cards)
+                FilterChip(
+                  label: Text(card.name),
+                  avatar: const Icon(Icons.face_retouching_natural, size: 16),
+                  selected: _selectedCardIds.contains(card.id),
+                  onSelected: (_) => _toggleCard(card),
+                ),
+            ],
+          ),
+          if (_selectedCardIds.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            for (final card in _selectedCards)
+              Text(
+                card.catchphrase.trim().isEmpty
+                    ? card.name
+                    : '${card.name} · ${card.catchphrase}',
+                style: const TextStyle(fontSize: 12, color: Color(0xFFD8A24A)),
+              ),
+            const SizedBox(height: 4),
+            const Text(
+              '在故事里直接用名字称呼他们',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final missingAnchor = _cardsMissingAnchor;
     return Scaffold(
       appBar: AppBar(
         title: const Text('✨ 新建绘本作品'),
@@ -181,6 +346,8 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                         prefixIcon: Icon(Icons.title),
                       ),
                     ),
+                    const SizedBox(height: 20),
+                    _buildCardPicker(),
                     const SizedBox(height: 20),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -264,6 +431,13 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                         );
                       }).toList(),
                     ),
+                    if (missingAnchor.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        '进入审核后会先为 ${missingAnchor.join('、')} 绘制该画风的定妆照',
+                        style: const TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ],
                     const SizedBox(height: 36),
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
