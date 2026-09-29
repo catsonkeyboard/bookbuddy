@@ -72,6 +72,7 @@ export PATH="$HOME/development/flutter/bin:$PATH"
 ```
 BookBuddy (绘本工坊)
  ├── 🎨 创作阶段 (Creation Pipeline)
+ │    ├── 角色卡：角色库创建可复用主角，选卡注入分镜并沿用定妆图 (CharacterCard / PinnedCharacter)
  │    ├── 灵感推荐：精选世界经典童话、主题寓意与角色设定 (FairyTaleCatalog)
  │    ├── 风格选择：水彩、3D皮克斯、日系动漫、复古绘本等艺术画风 (StyleCatalog)
  │    ├── 分镜创作：LLM 镜头重构算法，将故事提炼为 8~12 幕分镜剧本 (BookEngineService)

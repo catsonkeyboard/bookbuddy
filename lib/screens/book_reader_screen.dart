@@ -436,12 +436,29 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    Text(
-                                      character.name,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 16,
-                                      ),
+                                    Row(
+                                      children: [
+                                        Text(
+                                          character.name,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 16,
+                                          ),
+                                        ),
+                                        if (_book.characterCardIds.contains(character.id))
+                                          Container(
+                                            margin: const EdgeInsets.only(left: 6),
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                            decoration: BoxDecoration(
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(color: const Color(0xFFD8A24A).withValues(alpha: 0.6)),
+                                            ),
+                                            child: const Text(
+                                              '角色卡',
+                                              style: TextStyle(fontSize: 10, color: Color(0xFFD8A24A)),
+                                            ),
+                                          ),
+                                      ],
                                     ),
                                     TextButton.icon(
                                       style: TextButton.styleFrom(

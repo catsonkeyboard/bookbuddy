@@ -1,10 +1,13 @@
 import 'dart:io';
 
+import 'package:bookbuddy/models/book.dart';
 import 'package:bookbuddy/models/character_card.dart';
 import 'package:bookbuddy/screens/character_library_screen.dart';
+import 'package:bookbuddy/services/book_storage_service.dart';
 import 'package:bookbuddy/services/character_storage_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 在真实事件循环里执行会产生文件 IO / 网络的操作，随后交替「让出真实时间片」与
 /// 「冲刷一次 FakeAsync 微任务队列」，直到 [until] 成立或达到 [maxRounds]。
@@ -37,25 +40,38 @@ Future<void> runIo(
 
 void main() {
   late Directory dir;
+  late Directory bookDir;
   late CharacterStorageService storage;
+  late BookStorageService bookStorage;
 
   setUp(() {
+    SharedPreferences.setMockInitialValues({
+      'bookbuddy_books_migrated_to_files': true,
+    });
     dir = Directory.systemTemp.createTempSync('bookbuddy-library-test-');
+    bookDir = Directory.systemTemp.createTempSync('bookbuddy-library-books-');
     storage = CharacterStorageService(directory: dir);
+    bookStorage = BookStorageService(booksDirectory: bookDir);
   });
 
   tearDown(() {
-    if (dir.existsSync()) dir.deleteSync(recursive: true);
+    for (final d in [dir, bookDir]) {
+      if (d.existsSync()) d.deleteSync(recursive: true);
+    }
   });
 
   Future<void> pumpLibrary(WidgetTester tester) => runIo(
         tester,
         () => tester.pumpWidget(
-          MaterialApp(home: CharacterLibraryScreen(storage: storage)),
+          MaterialApp(
+            home: CharacterLibraryScreen(
+              storage: storage,
+              bookStorage: bookStorage,
+            ),
+          ),
         ),
         // 加载完成后 loading 指示器会消失（无论最终是空状态、列表还是错误态）。
-        until: () =>
-            find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        until: () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
       );
 
   testWidgets('没有卡片时显示空状态', (tester) async {
@@ -86,9 +102,9 @@ void main() {
     });
     await pumpLibrary(tester);
     expect(find.text('豆豆'), findsOneWidget);
-    expect(find.text('动物 · 定妆图 1 张'), findsOneWidget);
+    expect(find.text('动物 · 定妆图 1 张 · 出演 0 本'), findsOneWidget);
     expect(find.text('小满'), findsOneWidget);
-    expect(find.text('物件 · 定妆图 0 张'), findsOneWidget);
+    expect(find.text('物件 · 定妆图 0 张 · 出演 0 本'), findsOneWidget);
     expect(find.text('还没有角色'), findsNothing);
   });
 
@@ -128,5 +144,28 @@ void main() {
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
     expect(find.text('豆豆'), findsOneWidget);
+  });
+
+  testWidgets('出演次数按绘本的 characterCardIds 统计', (tester) async {
+    await tester.runAsync(() async {
+      await storage.saveCard(
+        CharacterCard(id: 'card_a', name: '豆豆', appearance: '绿色'),
+      );
+      for (final id in ['book-1', 'book-2']) {
+        await bookStorage.saveBook(
+          PictureBook(
+            id: id,
+            title: '书 $id',
+            styleId: 'watercolor',
+            styleName: '水彩童话',
+            pages: [BookPageItem(pageIndex: 0, text: '豆豆出发。')],
+            createdAt: DateTime.utc(2026, 9, 30),
+            characterCardIds: ['card_a'],
+          ),
+        );
+      }
+    });
+    await pumpLibrary(tester);
+    expect(find.text('动物 · 定妆图 0 张 · 出演 2 本'), findsOneWidget);
   });
 }

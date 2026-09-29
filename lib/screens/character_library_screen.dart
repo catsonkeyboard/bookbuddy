@@ -3,13 +3,15 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../models/character_card.dart';
+import '../services/book_storage_service.dart';
 import '../services/character_storage_service.dart';
 import 'character_card_editor_screen.dart';
 
 class CharacterLibraryScreen extends StatefulWidget {
   final CharacterStorageService? storage;
+  final BookStorageService? bookStorage;
 
-  const CharacterLibraryScreen({super.key, this.storage});
+  const CharacterLibraryScreen({super.key, this.storage, this.bookStorage});
 
   @override
   State<CharacterLibraryScreen> createState() => _CharacterLibraryScreenState();
@@ -17,7 +19,9 @@ class CharacterLibraryScreen extends StatefulWidget {
 
 class _CharacterLibraryScreenState extends State<CharacterLibraryScreen> {
   late final CharacterStorageService _storage;
+  late final BookStorageService _bookStorage;
   List<CharacterCard> _cards = [];
+  Map<String, int> _bookCounts = {};
   bool _loading = true;
   String? _errorMessage;
 
@@ -25,6 +29,7 @@ class _CharacterLibraryScreenState extends State<CharacterLibraryScreen> {
   void initState() {
     super.initState();
     _storage = widget.storage ?? CharacterStorageService();
+    _bookStorage = widget.bookStorage ?? BookStorageService();
     _load();
     CharacterStorageService.cardsChangedNotifier.addListener(_load);
   }
@@ -38,9 +43,20 @@ class _CharacterLibraryScreenState extends State<CharacterLibraryScreen> {
   Future<void> _load() async {
     try {
       final cards = await _storage.loadCards();
+      final counts = <String, int>{};
+      try {
+        for (final book in await _bookStorage.loadBooks()) {
+          for (final id in book.characterCardIds) {
+            counts[id] = (counts[id] ?? 0) + 1;
+          }
+        }
+      } catch (_) {
+        // 书架读不出来只影响「出演 N 本」，不影响角色库本身。
+      }
       if (!mounted) return;
       setState(() {
         _cards = cards;
+        _bookCounts = counts;
         _loading = false;
         _errorMessage = null;
       });
@@ -231,7 +247,7 @@ class _CharacterLibraryScreenState extends State<CharacterLibraryScreen> {
                             overflow: TextOverflow.ellipsis,
                           ),
                           Text(
-                            '${_kindLabel(card.kind)} · 定妆图 ${card.anchorImagePaths.length} 张',
+                            '${_kindLabel(card.kind)} · 定妆图 ${card.anchorImagePaths.length} 张 · 出演 ${_bookCounts[card.id] ?? 0} 本',
                             style: const TextStyle(fontSize: 11, color: Colors.grey),
                           ),
                         ],

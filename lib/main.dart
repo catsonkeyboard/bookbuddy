@@ -421,6 +421,17 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                               overflow: TextOverflow.ellipsis,
                                             ),
                                           ),
+                                          if (b.characterCardIds.isNotEmpty) ...[
+                                            const SizedBox(width: 6),
+                                            const Tooltip(
+                                              message: '使用了角色卡',
+                                              child: Icon(
+                                                Icons.face_retouching_natural,
+                                                size: 16,
+                                                color: Color(0xFFD8A24A),
+                                              ),
+                                            ),
+                                          ],
                                           if (hasUnfinished) ...[
                                             const SizedBox(width: 8),
                                             Container(
