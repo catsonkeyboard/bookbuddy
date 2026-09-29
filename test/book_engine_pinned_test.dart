@@ -266,4 +266,33 @@ void main() {
     );
     expect(sent, isEmpty);
   });
+
+  test('两张同名角色卡在请求前就被拒绝', () async {
+    final sent = <dynamic>[];
+    final engine = BookEngineService(dio: fakeLlmDio({'scenes': []}, sent));
+    final twin = CharacterCard(
+      id: 'card_dino2',
+      name: '豆豆',
+      appearance: '另一只豆豆',
+    );
+    await expectLater(
+      engine.createStoryboardDraft(
+        settings: openAiSettings(),
+        title: 't',
+        storyText: 's',
+        pinnedCharacters: [
+          PinnedCharacter(card: dino()),
+          PinnedCharacter(card: twin),
+        ],
+      ),
+      throwsA(
+        isA<ArgumentError>().having(
+          (e) => e.message,
+          'message',
+          contains('两张都叫「豆豆」'),
+        ),
+      ),
+    );
+    expect(sent, isEmpty);
+  });
 }

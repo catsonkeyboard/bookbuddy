@@ -67,6 +67,17 @@ class BookEngineService {
     if (pinnedCharacters.length > kMaxCharacterCardsPerBook) {
       throw ArgumentError('最多只能选择 $kMaxCharacterCardsPerBook 张角色卡');
     }
+    final pinnedNames = <String, String>{};
+    for (final p in pinnedCharacters) {
+      final name = p.card.name.trim();
+      final other = pinnedNames[name];
+      if (other != null && other != p.card.id) {
+        throw ArgumentError(
+          '选择的角色卡里有两张都叫「$name」，请先在角色库里改名，再一起使用。',
+        );
+      }
+      pinnedNames[name] = p.card.id;
+    }
     final systemPrompt = '''
 你是一位资深儿童绘本分镜大师。请阅读完整故事，将故事整体改编并重构为 8 ~ 12 个连续生动的【绘本跨页镜头（Scenes）】。
 ## 绘本核心原则：
@@ -258,6 +269,7 @@ $lines
     required List<PinnedCharacter> pinned,
   }) {
     if (pinned.isEmpty) return;
+    final pinnedIds = pinned.map((p) => p.card.id).toSet();
     for (final p in pinned) {
       final card = p.card;
       final projected = card.toBookCharacter(referenceImageBase64: p.anchorBase64);
@@ -273,7 +285,10 @@ $lines
       // 规则二：大模型另造的同名角色合并到卡片 id，页面引用与换装一并改写。
       final name = card.name.trim();
       final duplicates = characters
-          .where((c) => c.id != card.id && c.name.trim() == name)
+          .where((c) =>
+              c.id != card.id &&
+              !pinnedIds.contains(c.id) &&
+              c.name.trim() == name)
           .map((c) => c.id)
           .toList();
       if (duplicates.isNotEmpty) {
