@@ -238,4 +238,31 @@ void main() {
     final cards = await storage.loadCards();
     expect(cards.map((c) => c.id), ['card_ok']);
   });
+
+  test('touchLastUsed 只更新指定卡片的 lastUsedAt 并影响排序', () async {
+    await storage.saveCard(
+      _card('card_a', '豆豆', createdAt: DateTime.utc(2026, 9, 1)),
+    );
+    await storage.saveCard(
+      _card('card_b', '小满', createdAt: DateTime.utc(2026, 9, 2)),
+    );
+    final before = CharacterStorageService.cardsChangedNotifier.value;
+
+    await storage.touchLastUsed(['card_a', 'card_missing', '../evil']);
+
+    final cards = await storage.loadCards();
+    expect(cards.first.id, 'card_a');
+    expect(cards.first.lastUsedAt, isNotNull);
+    expect(cards.first.name, '豆豆');
+    expect(cards.last.lastUsedAt, isNull);
+    expect(CharacterStorageService.cardsChangedNotifier.value, before + 1);
+  });
+
+  test('touchLastUsed 空集合不写盘不通知', () async {
+    await storage.saveCard(_card('card_a', '豆豆'));
+    final before = CharacterStorageService.cardsChangedNotifier.value;
+    await storage.touchLastUsed(const []);
+    expect(CharacterStorageService.cardsChangedNotifier.value, before);
+    expect((await storage.loadCards()).single.lastUsedAt, isNull);
+  });
 }
