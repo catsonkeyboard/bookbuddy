@@ -236,4 +236,38 @@ void main() {
     expect(tester.widget<TextField>(briefField()).controller!.text, '豆豆在雨天迷路了。');
     expect(find.text('用这个故事'), findsNothing);
   });
+
+  testWidgets('正文被清空后不能按建议重写也不能使用', (tester) async {
+    final engine = BookEngineService(
+      dio: sequencedOpenAiDio([storyJson('标题', '正文。')], []),
+    );
+    await pumpComposer(tester, cards: [dino()], engine: engine, popped: []);
+    await tester.enterText(briefField(), '随便讲一个。');
+    await tester.pump();
+    await runIo(
+      tester,
+      () => tester.tap(find.text('生成故事')),
+      until: () => find.text('用这个故事').evaluate().isNotEmpty,
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, '想改哪里？比如：结局再温暖一点 / 加一段他们吵架又和好'),
+      '再温暖一点',
+    );
+    await tester.pump();
+    expect(
+      tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '按建议重写')).onPressed,
+      isNotNull,
+    );
+
+    await tester.enterText(find.widgetWithText(TextField, '故事正文'), '');
+    await tester.pump();
+    expect(
+      tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '按建议重写')).onPressed,
+      isNull,
+    );
+    expect(
+      tester.widget<FilledButton>(find.widgetWithText(FilledButton, '用这个故事')).onPressed,
+      isNull,
+    );
+  });
 }

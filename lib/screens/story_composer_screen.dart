@@ -92,23 +92,26 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
   }
 
   /// 生成或重写：成功前压入当前版本；失败时编辑框与版本栈都不变。
+  /// 进入即置忙，避免读设置期间重复触发。
   Future<void> _run({required bool revise}) async {
-    final AppSettings settings;
-    try {
-      settings = await _loadSettings();
-    } catch (e) {
-      _toast('读取设置失败: $e', error: true);
-      return;
-    }
-    if (settings.llmApiKey.isEmpty) {
-      _toast('⚠️ 请先在设置里填写 LLM API Key', error: true);
-      return;
-    }
+    if (_busy) return;
     setState(() {
       _busy = true;
       _busyText = revise ? '正在按你的建议重写故事...' : '正在为你写故事...';
     });
     try {
+      final AppSettings settings;
+      try {
+        settings = await _loadSettings();
+      } catch (e) {
+        _toast('读取设置失败: $e', error: true);
+        return;
+      }
+      if (!mounted) return;
+      if (settings.llmApiKey.isEmpty) {
+        _toast('⚠️ 请先在设置里填写 LLM API Key', error: true);
+        return;
+      }
       final result = await _engine.composeStory(
         settings: settings,
         cards: widget.cards,
@@ -157,7 +160,9 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
   @override
   Widget build(BuildContext context) {
     final canGenerate = !_busy && _briefCtrl.text.trim().isNotEmpty;
-    final canRewrite = !_busy && _feedbackCtrl.text.trim().isNotEmpty;
+    final canRewrite = !_busy &&
+        _feedbackCtrl.text.trim().isNotEmpty &&
+        _storyCtrl.text.trim().isNotEmpty;
     final canUse = !_busy && _storyCtrl.text.trim().isNotEmpty;
     return Scaffold(
       appBar: AppBar(title: const Text('✨ 让 AI 按角色写故事')),
@@ -232,14 +237,16 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Row(
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     OutlinedButton.icon(
                       onPressed: canRewrite ? () => _run(revise: true) : null,
                       icon: const Icon(Icons.edit_note),
                       label: const Text('按建议重写'),
                     ),
-                    const SizedBox(width: 12),
                     TextButton.icon(
                       onPressed: (_busy || _history.isEmpty) ? null : _undo,
                       icon: const Icon(Icons.undo),
