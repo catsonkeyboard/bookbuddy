@@ -265,4 +265,17 @@ void main() {
     expect(CharacterStorageService.cardsChangedNotifier.value, before);
     expect((await storage.loadCards()).single.lastUsedAt, isNull);
   });
+
+  test('deleteImage 删除卡片目录里的图片，文件不存在时不报错', () async {
+    final relative =
+        await storage.writeImage('card_a', 'photo.jpg', Uint8List.fromList([1, 2]));
+    expect(await File('${dir.path}/card_a/photo.jpg').exists(), isTrue);
+    await storage.deleteImage(relative);
+    expect(await File('${dir.path}/card_a/photo.jpg').exists(), isFalse);
+    await storage.deleteImage(relative);
+  });
+
+  test('deleteImage 拒绝逃出角色库目录的路径', () async {
+    await expectLater(storage.deleteImage('../x.jpg'), throwsArgumentError);
+  });
 }
