@@ -34,6 +34,15 @@ Future<void> runIo(
   await tester.pumpAndSettle();
 }
 
+/// 定妆照成功的 SnackBar 已出现，且转圈动画已停（`finally` 里 `_isGenerating` 已复位）。
+/// 只等文案会在转圈仍在时提前退出，随后 `pumpAndSettle` 会被无限动画卡住。
+bool portraitSavedAndIdle() =>
+    find
+        .text('定妆照已保存。请检查角色外貌和服装，确认后再开始绘制故事页。')
+        .evaluate()
+        .isNotEmpty &&
+    find.byType(CircularProgressIndicator).evaluate().isEmpty;
+
 const watercolor = BookStyle(
   id: 'watercolor',
   name: '水彩童话',
@@ -51,27 +60,30 @@ CharacterCard dino() => CharacterCard(
       defaultOutfit: '红色小围巾',
     );
 
-Dio fakeGeminiImageDio(String base64Png) => Dio()
+Dio fakeGeminiImageDio(String base64Png, [List<dynamic>? sent]) => Dio()
   ..interceptors.add(
     InterceptorsWrapper(
-      onRequest: (options, handler) => handler.resolve(
-        Response(
-          requestOptions: options,
-          data: {
-            'candidates': [
-              {
-                'content': {
-                  'parts': [
-                    {
-                      'inlineData': {'mimeType': 'image/png', 'data': base64Png},
-                    },
-                  ],
+      onRequest: (options, handler) {
+        sent?.add(options.data);
+        handler.resolve(
+          Response(
+            requestOptions: options,
+            data: {
+              'candidates': [
+                {
+                  'content': {
+                    'parts': [
+                      {
+                        'inlineData': {'mimeType': 'image/png', 'data': base64Png},
+                      },
+                    ],
+                  },
                 },
-              },
-            ],
-          },
-        ),
-      ),
+              ],
+            },
+          ),
+        );
+      },
     ),
   );
 
@@ -158,10 +170,7 @@ void main() {
     await runIo(
       tester,
       () => tester.tap(find.byTooltip('重新生成定妆照')),
-      until: () => find
-          .text('定妆照已保存。请检查角色外貌和服装，确认后再开始绘制故事页。')
-          .evaluate()
-          .isNotEmpty,
+      until: portraitSavedAndIdle,
       maxRounds: 120,
     );
 
@@ -205,10 +214,7 @@ void main() {
     await runIo(
       tester,
       () => tester.tap(find.byTooltip('重新生成定妆照')),
-      until: () => find
-          .text('定妆照已保存。请检查角色外貌和服装，确认后再开始绘制故事页。')
-          .evaluate()
-          .isNotEmpty,
+      until: portraitSavedAndIdle,
       maxRounds: 120,
     );
 
@@ -229,5 +235,61 @@ void main() {
     final book = jsonDecode(bookFile.readAsStringSync()) as Map<String, dynamic>;
     expect((book['characters'] as List).single['referenceImageBase64'], pngBase64);
     expect((book['characters'] as List).single['appearance'], '紫色毛绒恐龙');
+  });
+
+  testWidgets('卡片角色补画定妆照时附带卡片照片', (tester) async {
+    const photo = 'UEhPVE9fTUFSS0VS';
+    final settings = AppSettings(
+      imageType: 'gemini',
+      imageApiKey: 'test-key',
+      imageModel: 'gemini-2.5-flash-image',
+    );
+
+    final sent = <dynamic>[];
+    await tester.runAsync(() => charStorage.saveCard(dino()));
+    await pumpReview(
+      tester,
+      settings: settings,
+      engine: BookEngineService(dio: fakeGeminiImageDio(pngBase64, sent)),
+      pinnedCharacters: [PinnedCharacter(card: dino(), photoBase64: photo)],
+    );
+    await runIo(
+      tester,
+      () => tester.tap(find.byTooltip('重新生成定妆照')),
+      until: portraitSavedAndIdle,
+      maxRounds: 120,
+    );
+    final withPhoto = jsonEncode(sent.single);
+    expect(withPhoto, contains(photo));
+    expect(withPhoto, contains('真实玩具或物件照片'));
+  });
+
+  // 与上一条分开：同一用例里第二次 pumpReview 会复用第一次的审核页 State（旧引擎、
+  // 旧角色，请求落进第一个记录器）；卸载整棵树则会触发 dispose 里未捕获的
+  // WakelockPlus.disable()（测试环境无平台通道）。各用各的树最稳。
+  testWidgets('书内改过外貌的卡片角色补画定妆照时不带卡片照片', (tester) async {
+    const photo = 'UEhPVE9fTUFSS0VS';
+    final settings = AppSettings(
+      imageType: 'gemini',
+      imageApiKey: 'test-key',
+      imageModel: 'gemini-2.5-flash-image',
+    );
+
+    await tester.runAsync(() => charStorage.saveCard(dino()));
+    final editedSent = <dynamic>[];
+    await pumpReview(
+      tester,
+      settings: settings,
+      engine: BookEngineService(dio: fakeGeminiImageDio(pngBase64, editedSent)),
+      initialCharacters: [dino().toBookCharacter()..appearance = '紫色毛绒恐龙'],
+      pinnedCharacters: [PinnedCharacter(card: dino(), photoBase64: photo)],
+    );
+    await runIo(
+      tester,
+      () => tester.tap(find.byTooltip('重新生成定妆照')),
+      until: portraitSavedAndIdle,
+      maxRounds: 120,
+    );
+    expect(jsonEncode(editedSent.single), isNot(contains(photo)));
   });
 }

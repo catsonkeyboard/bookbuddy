@@ -62,7 +62,7 @@ void main() {
     await tester.pumpWidget(const BookBuddyApp());
     await _settle(tester);
     expect(find.byTooltip('我的角色'), findsOneWidget);
-    expect(find.text('给孩子做一个专属主角'), findsOneWidget);
+    expect(find.text('拍一张玩具，做一个专属主角'), findsOneWidget);
     expect(find.widgetWithText(OutlinedButton, '我的角色'), findsOneWidget);
     expect(find.widgetWithText(ElevatedButton, '新建角色'), findsOneWidget);
   });

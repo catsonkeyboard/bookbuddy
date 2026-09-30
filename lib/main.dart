@@ -284,12 +284,12 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      '给孩子做一个专属主角',
+                                      '拍一张玩具，做一个专属主角',
                                       style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                                     ),
                                     SizedBox(height: 4),
                                     Text(
-                                      '创建可复用的角色卡，之后每本绘本都能请他出场',
+                                      '拍照或手动描述，创建可复用的角色卡，之后每本绘本都能请他出场',
                                       style: TextStyle(fontSize: 13, color: Colors.grey),
                                     ),
                                   ],

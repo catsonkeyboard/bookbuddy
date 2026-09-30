@@ -74,6 +74,7 @@ BookBuddy (绘本工坊)
  ├── 🎨 创作阶段 (Creation Pipeline)
  │    ├── 角色卡：角色库创建可复用主角，选卡注入分镜并沿用定妆图 (CharacterCard / PinnedCharacter)
  │    ├── 故事助手：角色卡 + 一句描述生成儿童故事，可手改与反馈重写，草稿自动保存 (StoryComposerScreen)
+ │    ├── 拍照建卡：拍玩具 / 相册选图 → 压缩去 EXIF → 多模态识别填表，照片参与定妆图生成 (PhotoPickerService / describeCharacterFromPhoto)
  │    ├── 灵感推荐：精选世界经典童话、主题寓意与角色设定 (FairyTaleCatalog)
  │    ├── 风格选择：水彩、3D皮克斯、日系动漫、复古绘本等艺术画风 (StyleCatalog)
  │    ├── 分镜创作：LLM 镜头重构算法，将故事提炼为 8~12 幕分镜剧本 (BookEngineService)
@@ -142,6 +143,8 @@ lib/
 │   ├── book_engine_service.dart       # 分镜大模型与跨接口生图核心引擎
 │   ├── book_storage_service.dart      # 绘本本地持久化存取服务
 │   ├── character_storage_service.dart # 角色库落盘 (bookbuddy_characters/：cards.json 元数据 + 图片文件)
+│   ├── photo_picker_service.dart      # 取图封装 (拍照/相册，Android 丢失照片找回)
+│   ├── photo_preprocessor.dart        # 照片预处理 (摆正、长边 1024、清空 EXIF、JPEG 85)
 │   ├── settings_service.dart          # 本地加密/持久化配置管理服务
 │   └── tts_service.dart               # MiniMax 语音生成、解码与沙盒缓存管理服务
 └── screens/

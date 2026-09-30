@@ -216,6 +216,11 @@ class _CharacterLibraryScreenState extends State<CharacterLibraryScreen> {
             const Icon(Icons.face_retouching_natural, size: 72, color: Colors.grey),
             const SizedBox(height: 16),
             const Text('还没有角色', style: TextStyle(fontSize: 16, color: Colors.grey)),
+            const SizedBox(height: 4),
+            const Text(
+              '拍一张玩具照片或手动描述，都能创建角色',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
             const SizedBox(height: 12),
             FilledButton.icon(
               onPressed: () => _openEditor(),

@@ -114,6 +114,15 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
         character.defaultOutfit == projected.defaultOutfit;
   }
 
+  /// 卡片来源且书内外貌未改动的角色，定妆照生成时附带卡片照片；其余返回 null。
+  String? _cardPhotoFor(BookCharacter character) {
+    if (!_isCardCharacter(character) || !_lookMatchesCard(character)) return null;
+    for (final p in widget.pinnedCharacters) {
+      if (p.card.id == character.id) return p.photoBase64;
+    }
+    return null;
+  }
+
   /// 首次落盘后把所用角色卡标记为「刚用过」；失败不影响绘本生成。
   Future<void> _touchCardsOnce() async {
     if (_touchedCards || _characterCardIds.isEmpty) return;
@@ -302,6 +311,7 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
           settings: widget.settings,
           style: widget.style,
           character: character,
+          photoReferenceBase64: _cardPhotoFor(character),
         );
         if (image == null || image.isEmpty) {
           throw StateError('${character.name} 定妆照生成失败');
