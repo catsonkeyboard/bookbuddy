@@ -14,6 +14,14 @@ class StoryboardDraft {
   const StoryboardDraft({required this.characters, required this.pages});
 }
 
+/// 故事助手的输出：标题 + 正文。
+class StoryDraftResult {
+  final String title;
+  final String story;
+
+  const StoryDraftResult({required this.title, required this.story});
+}
+
 /// 从角色库选中、要固定进本书的角色：卡片本体 + 当前画风的定妆图（可能为空）。
 /// photoBase64 留给拍照阶段使用，P1 恒为空。
 class PinnedCharacter {
@@ -57,6 +65,105 @@ class BookEngineService {
     title: title,
     storyText: storyText,
   )).pages;
+
+  /// 故事创作助手：按角色卡与一句描述写儿童卡通故事。
+  /// 传入 currentStory（编辑框现文本）与 feedback 时进入修改模式，只改反馈涉及的部分。
+  Future<StoryDraftResult> composeStory({
+    required AppSettings settings,
+    required List<CharacterCard> cards,
+    required String brief,
+    String? currentStory,
+    String? feedback,
+  }) async {
+    if (cards.length > kMaxCharacterCardsPerBook) {
+      throw ArgumentError('最多只能选择 $kMaxCharacterCardsPerBook 张角色卡');
+    }
+    final trimmedBrief = brief.trim();
+    if (trimmedBrief.isEmpty) {
+      throw ArgumentError('请先写一句你想讲的故事');
+    }
+
+    final systemPrompt = '''
+你是一位面向 3 到 8 岁儿童的卡通故事作者。语言温暖、有画面感、朗读顺畅；不出现恐怖、暴力、说教或成人话题。
+${_storyCastBlock(cards)}
+## 故事结构
+- 开端 → 一个小冲突或小任务 → 转折 → 温暖收尾。
+- 正文 400 到 700 字；分 8 到 12 个自然段，每段是一个可以画出来的场景，为后续分镜留好接口。
+- 对话简短，符合孩子的理解力；结尾给孩子一点温暖的感受，不要生硬说教。
+## 输出格式
+只输出合法 JSON：{"title": "故事标题（不超过 12 个字）", "story": "正文，段落之间用换行分隔"}
+''';
+
+    final isRevision = currentStory != null && currentStory.trim().isNotEmpty;
+    final trimmedFeedback = (feedback ?? '').trim();
+    final userPrompt = isRevision
+        ? '''
+### 故事要求
+$trimmedBrief
+
+### 当前故事（用户可能已手动修改过）
+${currentStory.trim()}
+
+### 用户的修改意见
+${trimmedFeedback.isEmpty ? '（无具体意见，请在保持原文的前提下小幅润色）' : trimmedFeedback}
+
+请只修改反馈涉及的部分，其余保持原文不动；若反馈明确要求整体重写则可以重写。仍然只输出同一格式的 JSON。
+'''
+        : '''
+### 故事要求
+$trimmedBrief
+
+请据此创作故事，只输出 JSON。
+''';
+
+    final raw = await _callLlm(
+      settings: settings,
+      systemPrompt: systemPrompt,
+      userPrompt: userPrompt,
+      temperature: 0.8,
+    );
+    final parsed = _extractJson(raw);
+    final story = parsed is Map ? (parsed['story']?.toString().trim() ?? '') : '';
+    if (story.isEmpty) {
+      throw const FormatException('故事生成结果格式不正确');
+    }
+    var title = parsed is Map ? (parsed['title']?.toString().trim() ?? '') : '';
+    if (title.isEmpty) {
+      final firstSentence = story.split(RegExp(r'[。！？!?\n]')).first.trim();
+      title = firstSentence.length > 12
+          ? firstSentence.substring(0, 12)
+          : firstSentence;
+    }
+    return StoryDraftResult(title: title, story: story);
+  }
+
+  /// 故事助手的角色段落：有卡片时逐条列出并要求原样使用，没有则让大模型自行设计。
+  String _storyCastBlock(List<CharacterCard> cards) {
+    if (cards.isEmpty) {
+      return '## 角色\n用户没有指定角色，请根据故事要求自行设计 1 到 3 个可爱的角色，并给他们起亲切易读的名字。';
+    }
+    String kindLabel(CharacterKind kind) => switch (kind) {
+          CharacterKind.human => '人类',
+          CharacterKind.animal => '动物',
+          CharacterKind.object => '物件',
+        };
+    String orBlank(String value, String fallback) =>
+        value.trim().isEmpty ? fallback : value.trim();
+    final lines = cards.map((c) {
+      final projected = c.toBookCharacter();
+      final species = c.species.trim().isEmpty ? '' : '，${c.species.trim()}';
+      return '- ${c.name}（${kindLabel(c.kind)}$species）：外貌 ${projected.appearance}；'
+          '服装 ${projected.defaultOutfit}；'
+          '性格 ${orBlank(c.personality, '未填写')}；'
+          '口头禅 ${orBlank(c.catchphrase, '无')}';
+    }).join('\n');
+    return '''
+## 角色（必须原样使用）
+$lines
+- 名字与设定必须原样使用，不得改名，不得改变物种或外貌。
+- 每个有口头禅的角色，口头禅至少自然地出现一次；性格通过行为和对话体现，不要直接罗列。
+''';
+  }
 
   Future<StoryboardDraft> createStoryboardDraft({
     required AppSettings settings,
@@ -652,6 +759,7 @@ $numbered
     required AppSettings settings,
     required String systemPrompt,
     required String userPrompt,
+    double? temperature,
   }) async {
     if (settings.llmType == 'gemini') {
       final base = settings.llmBaseUrl.replaceAll(RegExp(r'/v1(beta)?/?$'), '');
@@ -678,7 +786,7 @@ $numbered
               {'text': systemPrompt},
             ],
           },
-          'generationConfig': {'temperature': 0.3},
+          'generationConfig': {'temperature': temperature ?? 0.3},
         },
       );
       final cands = resp.data['candidates'] as List? ?? [];
@@ -702,6 +810,7 @@ $numbered
         data: {
           'model': settings.llmModel,
           'max_tokens': 4096,
+          'temperature': ?temperature,
           'system': systemPrompt,
           'messages': [
             {'role': 'user', 'content': userPrompt},
@@ -730,6 +839,7 @@ $numbered
         ),
         data: {
           'model': settings.llmModel,
+          'temperature': ?temperature,
           'messages': [
             {'role': 'system', 'content': systemPrompt},
             {'role': 'user', 'content': userPrompt},
