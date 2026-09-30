@@ -22,6 +22,35 @@ class StoryDraftResult {
   const StoryDraftResult({required this.title, required this.story});
 }
 
+/// 随文本一起发给大模型的一张图片（原始 base64，不带 data: 前缀）。
+class LlmImageInput {
+  final String base64;
+  final String mimeType;
+
+  const LlmImageInput({required this.base64, required this.mimeType});
+}
+
+/// 识图得到的角色卡草稿，由用户确认后填进表单。
+class CharacterCardDraft {
+  final String name;
+  final CharacterKind kind;
+  final String species;
+  final String appearance;
+  final String defaultOutfit;
+  final String personality;
+  final String catchphrase;
+
+  const CharacterCardDraft({
+    required this.name,
+    required this.kind,
+    this.species = '',
+    required this.appearance,
+    this.defaultOutfit = '',
+    this.personality = '',
+    this.catchphrase = '',
+  });
+}
+
 /// 从角色库选中、要固定进本书的角色：卡片本体 + 当前画风的定妆图（可能为空）。
 /// photoBase64 留给拍照阶段使用，P1 恒为空。
 class PinnedCharacter {
@@ -39,11 +68,16 @@ class PinnedCharacter {
 class _ImageReference {
   final String name;
   final String base64;
-  const _ImageReference(this.name, this.base64);
+  final bool isPhoto;
+  const _ImageReference(this.name, this.base64, {this.isPhoto = false});
 }
 
 class BookEngineService {
   final Dio _dio;
+
+  /// 真实照片作参考图时附在说明里的要求（三条生图分支共用）。
+  static const _photoGuidance =
+      '请按照片中的外形、颜色、材质和标志性细节绘制这个角色，并转换为当前绘本画风；忽略照片的背景、光线和拍摄角度。';
 
   BookEngineService({Dio? dio})
     : _dio =
@@ -137,12 +171,7 @@ $trimmedBrief
         rethrow;
       }
     }
-    dynamic parsed;
-    try {
-      parsed = _extractJson(raw);
-    } on FormatException {
-      throw const FormatException('故事生成结果格式不正确');
-    }
+    final parsed = _extractJson(raw);
     final rawStory = parsed is Map ? parsed['story'] : null;
     final story = switch (rawStory) {
       List list => list.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).join('\n\n'),
@@ -187,6 +216,56 @@ $lines
 - 名字与设定必须原样使用，不得改名，不得改变物种或外貌。
 - 每个有口头禅的角色，口头禅至少自然地出现一次；性格通过行为和对话体现，不要直接罗列。
 ''';
+  }
+
+  /// 看一张玩具 / 宠物 / 物件照片，设计成一个适合绘本的拟人角色草稿。
+  /// 激活的文本模型不支持图片时，上游错误原样抛出，由页面提示切换模型。
+  Future<CharacterCardDraft> describeCharacterFromPhoto({
+    required AppSettings settings,
+    required String photoBase64,
+    required String mimeType,
+  }) async {
+    if (photoBase64.isEmpty) {
+      throw ArgumentError('请先选择一张照片');
+    }
+    const systemPrompt = '''
+你是一位儿童绘本角色设计师。用户会给你一张儿童玩具、宠物或日常物件的照片，请把照片里的主体设计成一个适合 3 到 8 岁儿童绘本的拟人角色。
+要求：
+- appearance 必须是可以直接画出来的具体外貌：颜色、材质、体型、五官或标志性细节；只写主体本身，不写背景、光线和拍摄角度。
+- name 亲切易读，2 到 4 个汉字。
+- catchphrase 一句，不超过 12 个字；personality 用一两句话写性格。
+- kind 按实物判断：毛绒动物玩具与真实动物都算 animal，人形玩偶或人物算 human，石头、机器人、汽车等物件算 object。
+- species 写物种或物件名，如「毛绒恐龙」「橘猫」「鹅卵石」；defaultOutfit 只写照片里确实穿戴的衣物或配饰，没有就留空字符串。
+只输出合法 JSON，不要解释，不要代码块；字符串里不要出现真实换行，引号用中文引号“”：
+{"name": "", "kind": "animal", "species": "", "appearance": "", "defaultOutfit": "", "personality": "", "catchphrase": ""}
+''';
+    final raw = await _callLlm(
+      settings: settings,
+      systemPrompt: systemPrompt,
+      userPrompt: '请根据这张照片设计角色，只输出 JSON。',
+      images: [LlmImageInput(base64: photoBase64, mimeType: mimeType)],
+    );
+    final parsed = _extractJson(raw);
+    String field(String key) =>
+        parsed is Map ? (parsed[key]?.toString().trim() ?? '') : '';
+    final name = field('name');
+    final kindName = field('kind');
+    final appearance = field('appearance');
+    if (name.isEmpty || kindName.isEmpty || appearance.isEmpty) {
+      throw const FormatException('识图结果格式不正确');
+    }
+    return CharacterCardDraft(
+      name: name,
+      kind: CharacterKind.values.firstWhere(
+        (k) => k.name == kindName,
+        orElse: () => CharacterKind.animal,
+      ),
+      species: field('species'),
+      appearance: appearance,
+      defaultOutfit: field('defaultOutfit'),
+      personality: field('personality'),
+      catchphrase: field('catchphrase'),
+    );
   }
 
   Future<StoryboardDraft> createStoryboardDraft({
@@ -587,6 +666,7 @@ $numbered
     required AppSettings settings,
     required BookStyle style,
     required BookCharacter character,
+    String? photoReferenceBase64,
   }) async {
     final prompt =
         '${style.prefix}。单独绘制角色定妆照：${character.name}。'
@@ -594,6 +674,16 @@ $numbered
         '全身自然站立，三分之二侧面视角，面部与物种特征清晰，简洁纯色背景。'
         '这是身份参考，后续故事页可用任何符合动作的朝向，不固定正面姿势。'
         '画面中只能有这一个角色，不要文字、其他人物或场景。';
+    // 通道能接收参考图时才带上照片；否则只按文字生成（调用方已提前提示用户）。
+    final photo = (photoReferenceBase64 != null &&
+            photoReferenceBase64.isNotEmpty &&
+            supportsCharacterReference(
+              type: settings.imageType,
+              baseUrl: settings.imageBaseUrl,
+              model: settings.imageModel,
+            ))
+        ? photoReferenceBase64
+        : null;
     return _callImageApi(
       type: settings.imageType,
       baseUrl: settings.imageBaseUrl,
@@ -601,6 +691,9 @@ $numbered
       model: settings.imageModel,
       prompt: sanitizePrompt(prompt),
       negative: style.negative,
+      references: [
+        if (photo != null) _ImageReference(character.name, photo, isPhoto: true),
+      ],
     );
   }
 
@@ -784,6 +877,7 @@ $numbered
     required String systemPrompt,
     required String userPrompt,
     double? temperature,
+    List<LlmImageInput> images = const [],
   }) async {
     if (settings.llmType == 'gemini') {
       final base = settings.llmBaseUrl.replaceAll(RegExp(r'/v1(beta)?/?$'), '');
@@ -801,6 +895,10 @@ $numbered
             {
               'role': 'user',
               'parts': [
+                for (final image in images)
+                  {
+                    'inlineData': {'mimeType': image.mimeType, 'data': image.base64},
+                  },
                 {'text': userPrompt},
               ],
             },
@@ -837,7 +935,23 @@ $numbered
           'temperature': ?temperature,
           'system': systemPrompt,
           'messages': [
-            {'role': 'user', 'content': userPrompt},
+            {
+              'role': 'user',
+              'content': images.isEmpty
+                  ? userPrompt
+                  : [
+                      for (final image in images)
+                        {
+                          'type': 'image',
+                          'source': {
+                            'type': 'base64',
+                            'media_type': image.mimeType,
+                            'data': image.base64,
+                          },
+                        },
+                      {'type': 'text', 'text': userPrompt},
+                    ],
+            },
           ],
         },
       );
@@ -866,7 +980,19 @@ $numbered
           'temperature': ?temperature,
           'messages': [
             {'role': 'system', 'content': systemPrompt},
-            {'role': 'user', 'content': userPrompt},
+            {
+              'role': 'user',
+              'content': images.isEmpty
+                  ? userPrompt
+                  : [
+                      for (final image in images)
+                        {
+                          'type': 'image_url',
+                          'image_url': {'url': 'data:${image.mimeType};base64,${image.base64}'},
+                        },
+                      {'type': 'text', 'text': userPrompt},
+                    ],
+            },
           ],
         },
       );
@@ -914,8 +1040,9 @@ $numbered
       for (final reference in references) {
         contentList.add({
           'type': 'text',
-          'text':
-              '以下参考图是${sanitizePrompt(reference.name)}的定妆照，仅参考此角色的外貌与服装，不复制姿势和朝向。',
+          'text': reference.isPhoto
+              ? '以下参考图是${sanitizePrompt(reference.name)}的真实玩具或物件照片。$_photoGuidance'
+              : '以下参考图是${sanitizePrompt(reference.name)}的定妆照，仅参考此角色的外貌与服装，不复制姿势和朝向。',
         });
         contentList.add({
           'type': 'image_url',
@@ -983,8 +1110,9 @@ $numbered
             },
           });
           parts.add({
-            'text':
-                '上一张图片是${sanitizePrompt(reference.name)}的定妆照。只将其用于此角色的外貌和默认服装，不复制背景、姿势或朝向。',
+            'text': reference.isPhoto
+                ? '上一张图片是${sanitizePrompt(reference.name)}的真实玩具或物件照片。$_photoGuidance'
+                : '上一张图片是${sanitizePrompt(reference.name)}的定妆照。只将其用于此角色的外貌和默认服装，不复制背景、姿势或朝向。',
           });
         }
         parts.add({'text': prompt});
@@ -1130,7 +1258,9 @@ $numbered
           for (final reference in references) ...[
             {
               'type': 'text',
-              'text': '以下图片是${sanitizePrompt(reference.name)}的定妆照。',
+              'text': reference.isPhoto
+                  ? '以下图片是${sanitizePrompt(reference.name)}的真实玩具或物件照片。$_photoGuidance'
+                  : '以下图片是${sanitizePrompt(reference.name)}的定妆照。',
             },
             {
               'type': 'image_url',
@@ -1430,7 +1560,11 @@ $numbered
       final start = str.indexOf('{');
       final end = str.lastIndexOf('}');
       if (start != -1 && end > start) {
-        return jsonDecode(str.substring(start, end + 1));
+        try {
+          return jsonDecode(str.substring(start, end + 1));
+        } catch (_) {
+          // 仍不是合法 JSON：交给调用方按「格式不正确」处理，不把 Dart 的原始报错抛给用户。
+        }
       }
     }
     return {};
