@@ -1,4 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_settings.dart';
 import '../models/character_card.dart';
@@ -51,6 +55,10 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
   String _busyText = '';
   final List<_StoryVersion> _history = [];
 
+  static const _draftKey = 'bookbuddy_story_composer_draft';
+  Timer? _saveTimer;
+  Map<String, dynamic>? _pendingDraft; // 进入页面时发现的上次草稿，等待用户恢复或丢弃
+
   @override
   void initState() {
     super.initState();
@@ -59,19 +67,89 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
     for (final c in [_briefCtrl, _titleCtrl, _storyCtrl, _feedbackCtrl]) {
       c.addListener(_onAnyFieldChanged);
     }
+    _loadDraft();
   }
 
   @override
   void dispose() {
+    _saveTimer?.cancel();
     for (final c in [_briefCtrl, _titleCtrl, _storyCtrl, _feedbackCtrl]) {
       c.dispose();
     }
     super.dispose();
   }
 
-  /// 任一输入变化时触发；按钮可用状态依赖输入内容，草稿保存在下一任务接入。
+  /// 任一输入变化时触发：刷新按钮可用状态，并在 1 秒后自动保存草稿。
   void _onAnyFieldChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(seconds: 1), _saveDraft);
+  }
+
+  Future<void> _saveDraft() async {
+    final brief = _briefCtrl.text;
+    final title = _titleCtrl.text;
+    final story = _storyCtrl.text;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (brief.trim().isEmpty && story.trim().isEmpty) {
+        await prefs.remove(_draftKey);
+        return;
+      }
+      await prefs.setString(
+        _draftKey,
+        jsonEncode({
+          'brief': brief,
+          'title': title,
+          'story': story,
+          'cardIds': widget.cards.map((c) => c.id).toList(),
+        }),
+      );
+    } catch (_) {
+      // 草稿只是保险，写不进去不影响创作。
+    }
+  }
+
+  Future<void> _clearDraft() async {
+    _saveTimer?.cancel();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_draftKey);
+    } catch (_) {}
+  }
+
+  Future<void> _loadDraft() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_draftKey);
+      if (raw == null) return;
+      final draft = jsonDecode(raw);
+      if (draft is! Map) return;
+      final map = Map<String, dynamic>.from(draft);
+      final brief = map['brief']?.toString() ?? '';
+      final story = map['story']?.toString() ?? '';
+      if (brief.trim().isEmpty && story.trim().isEmpty) return;
+      if (!mounted) return;
+      setState(() => _pendingDraft = map);
+    } catch (_) {}
+  }
+
+  void _restoreDraft() {
+    final draft = _pendingDraft;
+    if (draft == null) return;
+    _briefCtrl.text = draft['brief']?.toString() ?? '';
+    _titleCtrl.text = draft['title']?.toString() ?? '';
+    _storyCtrl.text = draft['story']?.toString() ?? '';
+    setState(() {
+      _hasStory = _storyCtrl.text.trim().isNotEmpty;
+      _pendingDraft = null;
+    });
+  }
+
+  Future<void> _discardDraft() async {
+    setState(() => _pendingDraft = null);
+    await _clearDraft();
   }
 
   String get _protagonistName =>
@@ -147,14 +225,14 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
     setState(() {});
   }
 
-  void _useStory() {
-    Navigator.pop(
-      context,
-      StoryDraftResult(
-        title: _titleCtrl.text.trim(),
-        story: _storyCtrl.text.trim(),
-      ),
+  Future<void> _useStory() async {
+    final result = StoryDraftResult(
+      title: _titleCtrl.text.trim(),
+      story: _storyCtrl.text.trim(),
     );
+    await _clearDraft();
+    if (!mounted) return;
+    Navigator.pop(context, result);
   }
 
   @override
@@ -172,6 +250,33 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
           child: ListView(
             padding: const EdgeInsets.all(20),
             children: [
+              if (_pendingDraft != null) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFD8A24A).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: const Color(0xFFD8A24A).withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.history, size: 18, color: Color(0xFFD8A24A)),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          '恢复上次未完成的故事',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      TextButton(onPressed: _discardDraft, child: const Text('丢弃')),
+                      FilledButton(onPressed: _restoreDraft, child: const Text('恢复')),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
               if (_busy) ...[
                 const LinearProgressIndicator(),
                 const SizedBox(height: 8),

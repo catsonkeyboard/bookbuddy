@@ -270,4 +270,59 @@ void main() {
       isNull,
     );
   });
+
+  testWidgets('输入 1 秒后自动保存草稿，再次进入可恢复或丢弃', (tester) async {
+    await pumpComposer(tester, cards: [dino()], popped: []);
+    await tester.enterText(briefField(), '豆豆在雨天迷路了。');
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+
+    final prefs = await SharedPreferences.getInstance();
+    final saved = jsonDecode(prefs.getString('bookbuddy_story_composer_draft')!)
+        as Map<String, dynamic>;
+    expect(saved['brief'], '豆豆在雨天迷路了。');
+    expect(saved['cardIds'], ['card_dino1']);
+
+    // 再次进入：出现恢复条，恢复后描述回填。（先退出上一个助手页，否则入口按钮被盖住）
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await pumpComposer(tester, cards: [dino()], popped: []);
+    expect(find.text('恢复上次未完成的故事'), findsOneWidget);
+    await tester.tap(find.text('恢复'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(briefField()).controller!.text, '豆豆在雨天迷路了。');
+    expect(find.text('恢复上次未完成的故事'), findsNothing);
+
+    // 第三次进入：丢弃后草稿被清除。
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await pumpComposer(tester, cards: [dino()], popped: []);
+    await tester.tap(find.text('丢弃'));
+    await tester.pumpAndSettle();
+    expect(find.text('恢复上次未完成的故事'), findsNothing);
+    expect(prefs.getString('bookbuddy_story_composer_draft'), isNull);
+  });
+
+  testWidgets('用这个故事时清除草稿，并恢复带正文的草稿时显示故事区', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'bookbuddy_story_composer_draft': jsonEncode({
+        'brief': '豆豆在雨天迷路了。',
+        'title': '草稿标题',
+        'story': '草稿正文。',
+        'cardIds': ['card_dino1'],
+      }),
+    });
+    final popped = <StoryDraftResult?>[];
+    await pumpComposer(tester, cards: [dino()], popped: popped);
+    await tester.tap(find.text('恢复'));
+    await tester.pumpAndSettle();
+    expect(find.text('草稿标题'), findsOneWidget);
+    expect(find.text('用这个故事'), findsOneWidget);
+
+    await tester.tap(find.text('用这个故事'));
+    await tester.pumpAndSettle();
+    expect(popped.single!.story, '草稿正文。');
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('bookbuddy_story_composer_draft'), isNull);
+  });
 }
