@@ -81,6 +81,7 @@ void main() {
   testWidgets('没有卡片时显示空状态', (tester) async {
     await pumpLibrary(tester);
     expect(find.text('还没有角色'), findsOneWidget);
+    expect(find.text('拍一张玩具照片或手动描述，都能创建角色'), findsOneWidget);
     expect(find.text('创建第一个角色'), findsOneWidget);
   });
 

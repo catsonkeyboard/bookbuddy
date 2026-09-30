@@ -191,6 +191,12 @@ class CharacterStorageService {
     });
   }
 
+  /// 删除卡片目录下的一张图片（如移除照片）；文件不存在时什么也不做。
+  Future<void> deleteImage(String relativePath) async {
+    final file = await imageFile(relativePath); // 沿用路径穿越防护
+    if (await file.exists()) await file.delete();
+  }
+
   /// 把这些卡片的 lastUsedAt 更新为当前时间；只改这一字段，不覆盖其它内容。
   /// 未知或非法 id 忽略；集合为空时不写盘。
   Future<void> touchLastUsed(Iterable<String> cardIds) async {
@@ -200,6 +206,25 @@ class CharacterStorageService {
     await _mutate((cards) {
       for (final card in cards) {
         if (ids.contains(card.id)) card.lastUsedAt = now;
+      }
+    });
+  }
+
+  /// 只更新卡片的照片路径与来源（有照片为 photo，否则 manual），不覆盖其它字段。
+  /// 卡片不存在时什么也不做。
+  Future<void> setPhoto(String cardId, String? photoPath) async {
+    if (!isValidId(cardId)) {
+      throw ArgumentError('Card id is not a valid directory name: $cardId');
+    }
+    await _mutate((cards) {
+      for (final card in cards) {
+        if (card.id == cardId) {
+          card
+            ..photoPath = photoPath
+            ..source = photoPath == null
+                ? CharacterCardSource.manual
+                : CharacterCardSource.photo;
+        }
       }
     });
   }

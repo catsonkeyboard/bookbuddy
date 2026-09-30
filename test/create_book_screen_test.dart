@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:bookbuddy/models/app_settings.dart';
 import 'package:bookbuddy/models/character_card.dart';
@@ -158,8 +159,11 @@ void main() {
 
   testWidgets('生成时把已选卡片的定妆图与 id 传给引擎和审核页', (tester) async {
     final png = base64Encode([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]);
+    final photoBytes = Uint8List.fromList([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9, 9]);
     await tester.runAsync(() async {
-      await storage.saveCard(card('card_a', '豆豆'));
+      final c = card('card_a', '豆豆')
+        ..photoPath = await storage.writeImage('card_a', 'photo.jpg', photoBytes);
+      await storage.saveCard(c);
       await storage.saveAnchor('card_a', 'watercolor', png);
     });
     final sent = <dynamic>[];
@@ -223,6 +227,8 @@ void main() {
     expect(review.initialCharacters.single.id, 'card_a');
     expect(review.initialCharacters.single.referenceImageBase64, png);
     expect(sent.single['messages'][0]['content'] as String, contains('【固定角色，必须原样使用】'));
+    expect(review.pinnedCharacters.single.photoBase64, base64Encode(photoBytes));
+    expect(jsonEncode(sent.single), isNot(contains(base64Encode(photoBytes))));
   });
 
   testWidgets('入口按钮带着已选角色卡打开故事助手，用这个故事后回填标题与正文', (tester) async {

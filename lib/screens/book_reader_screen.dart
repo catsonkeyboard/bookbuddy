@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -64,7 +65,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
 
   @override
   void dispose() {
-    WakelockPlus.disable();
+    unawaited(WakelockPlus.disable().catchError((_) {}));
     _audioPlayer.stop();
     _audioPlayer.dispose();
     _pageController.dispose();

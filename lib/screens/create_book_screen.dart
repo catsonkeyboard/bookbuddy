@@ -136,10 +136,15 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       final path = card.anchorImagePaths[_selectedStyleId];
       final anchor =
           path == null ? null : await _characterStorage.readImageBase64(path);
+      final photoPath = card.photoPath;
+      final photo = photoPath == null
+          ? null
+          : await _characterStorage.readImageBase64(photoPath);
       pinned.add(
         PinnedCharacter(
           card: card,
           anchorBase64: (anchor == null || anchor.isEmpty) ? null : anchor,
+          photoBase64: (photo == null || photo.isEmpty) ? null : photo,
         ),
       );
     }

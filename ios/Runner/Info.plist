@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>拍一张玩具或宠物的照片，用来创建专属的绘本角色。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>从相册选一张玩具或宠物的照片，用来创建专属的绘本角色。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
