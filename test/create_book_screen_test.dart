@@ -4,12 +4,14 @@ import 'dart:io';
 import 'package:bookbuddy/models/app_settings.dart';
 import 'package:bookbuddy/models/character_card.dart';
 import 'package:bookbuddy/screens/create_book_screen.dart';
+import 'package:bookbuddy/screens/story_composer_screen.dart';
 import 'package:bookbuddy/screens/storyboard_review_screen.dart';
 import 'package:bookbuddy/services/book_engine_service.dart';
 import 'package:bookbuddy/services/character_storage_service.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 在真实事件循环里执行会产生文件 IO 的操作，然后交替「让出真实时间片」与
 /// 「冲刷一次 FakeAsync 微任务队列」，直到 [until] 成立或达到 [maxRounds]。
@@ -64,6 +66,8 @@ void main() {
   late CharacterStorageService storage;
 
   setUp(() {
+    // 故事助手页用 SharedPreferences 存草稿；测试里没有真实平台通道，必须先挂上 mock。
+    SharedPreferences.setMockInitialValues({});
     dir = Directory.systemTemp.createTempSync('bookbuddy-create-test-');
     storage = CharacterStorageService(directory: dir);
   });
@@ -219,5 +223,102 @@ void main() {
     expect(review.initialCharacters.single.id, 'card_a');
     expect(review.initialCharacters.single.referenceImageBase64, png);
     expect(sent.single['messages'][0]['content'] as String, contains('【固定角色，必须原样使用】'));
+  });
+
+  testWidgets('入口按钮带着已选角色卡打开故事助手，用这个故事后回填标题与正文', (tester) async {
+    await tester.runAsync(() => storage.saveCard(card('card_a', '豆豆')));
+    final sent = <dynamic>[];
+    final engine = BookEngineService(
+      dio: fakeLlmDio({'title': '豆豆的雨天', 'story': '豆豆出门了。\n\n它迷路了。'}, sent),
+    );
+    await pumpCreate(
+      tester,
+      engine: engine,
+      settings: AppSettings(
+        llmType: 'openai',
+        llmBaseUrl: 'https://example.test',
+        llmApiKey: 'k',
+        llmModel: 'm',
+        imageType: 'gemini',
+        imageApiKey: 'test-key',
+        imageModel: 'gemini-2.5-flash-image',
+      ),
+    );
+    await tester.tap(find.widgetWithText(FilterChip, '豆豆'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('让 AI 按角色写故事'));
+    await tester.pumpAndSettle();
+    final composer = tester.widget<StoryComposerScreen>(find.byType(StoryComposerScreen));
+    expect(composer.cards.single.id, 'card_a');
+
+    await tester.enterText(
+      find.widgetWithText(
+        TextField,
+        '你想讲一个什么样的故事？比如：豆豆和小满在雨天迷路了，最后学会互相帮助',
+      ),
+      '豆豆在雨天迷路了。',
+    );
+    await tester.pump();
+    await runIo(
+      tester,
+      () => tester.tap(find.text('生成故事')),
+      until: () => find.text('用这个故事').evaluate().isNotEmpty,
+    );
+    await tester.tap(find.text('用这个故事'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(StoryComposerScreen), findsNothing);
+    final title = tester.widget<TextField>(
+      find.widgetWithText(TextField, '故事标题（如：小红帽的故事、三只小猪）'),
+    );
+    expect(title.controller!.text, '豆豆的雨天');
+    expect(find.textContaining('豆豆出门了。'), findsOneWidget);
+    expect(sent, hasLength(1));
+  });
+
+  testWidgets('正文已有内容时回填前先确认覆盖', (tester) async {
+    final engine = BookEngineService(
+      dio: fakeLlmDio({'title': '新标题', 'story': '新正文。'}, []),
+    );
+    await pumpCreate(
+      tester,
+      engine: engine,
+      settings: AppSettings(
+        llmType: 'openai',
+        llmBaseUrl: 'https://example.test',
+        llmApiKey: 'k',
+        llmModel: 'm',
+      ),
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, '可直接粘贴故事全文；若留空仅填书名，AI 将自动构思并续写完整童话...'),
+      '我自己写的正文',
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('让 AI 按角色写故事'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(
+        TextField,
+        '你想讲一个什么样的故事？比如：豆豆和小满在雨天迷路了，最后学会互相帮助',
+      ),
+      '随便讲一个。',
+    );
+    await tester.pump();
+    await runIo(
+      tester,
+      () => tester.tap(find.text('生成故事')),
+      until: () => find.text('用这个故事').evaluate().isNotEmpty,
+    );
+    await tester.tap(find.text('用这个故事'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('用生成的故事替换当前正文？'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('我自己写的正文'), findsOneWidget);
+    expect(find.textContaining('新正文'), findsNothing);
   });
 }

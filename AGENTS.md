@@ -73,6 +73,7 @@ export PATH="$HOME/development/flutter/bin:$PATH"
 BookBuddy (绘本工坊)
  ├── 🎨 创作阶段 (Creation Pipeline)
  │    ├── 角色卡：角色库创建可复用主角，选卡注入分镜并沿用定妆图 (CharacterCard / PinnedCharacter)
+ │    ├── 故事助手：角色卡 + 一句描述生成儿童故事，可手改与反馈重写，草稿自动保存 (StoryComposerScreen)
  │    ├── 灵感推荐：精选世界经典童话、主题寓意与角色设定 (FairyTaleCatalog)
  │    ├── 风格选择：水彩、3D皮克斯、日系动漫、复古绘本等艺术画风 (StyleCatalog)
  │    ├── 分镜创作：LLM 镜头重构算法，将故事提炼为 8~12 幕分镜剧本 (BookEngineService)
@@ -149,6 +150,7 @@ lib/
     ├── book_reader_screen.dart        # 绘本翻页阅读器、单页朗读控制、单页插画重绘页
     ├── character_library_screen.dart  # 角色库网格页
     ├── character_card_editor_screen.dart # 角色卡新建/编辑与定妆图生成页
+    ├── story_composer_screen.dart     # 故事创作助手页 (生成/反馈重写/版本回退/草稿)
     ├── settings_screen.dart           # 模型接口、密钥及 TTS 伴读配置中心
     └── tale_recommendation_dialog.dart# 经典童话灵感弹窗
 ```

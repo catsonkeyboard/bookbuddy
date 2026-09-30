@@ -9,6 +9,7 @@ import '../services/book_engine_service.dart';
 import '../services/character_storage_service.dart';
 import '../services/settings_service.dart';
 import 'character_library_screen.dart';
+import 'story_composer_screen.dart';
 import 'storyboard_review_screen.dart';
 import 'tale_recommendation_dialog.dart';
 
@@ -143,6 +144,45 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       );
     }
     return pinned;
+  }
+
+  /// 打开故事助手；返回结果后回填标题与正文，正文已有内容时先确认覆盖。
+  Future<void> _openStoryComposer() async {
+    final result = await Navigator.push<StoryDraftResult>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StoryComposerScreen(
+          cards: _selectedCards,
+          engine: _engine,
+          loadSettings: _loadSettings,
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    if (_textCtrl.text.trim().isNotEmpty) {
+      final overwrite = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('用生成的故事替换当前正文？'),
+          content: const Text('当前故事正文会被覆盖，标题也会更新。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('替换'),
+            ),
+          ],
+        ),
+      );
+      if (overwrite != true || !mounted) return;
+    }
+    setState(() {
+      _titleCtrl.text = result.title;
+      _textCtrl.text = result.story;
+    });
   }
 
   Future<void> _startGenerate() async {
@@ -383,8 +423,23 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        Row(
-                          children: [
+                        Flexible(
+                          child: Wrap(
+                            alignment: WrapAlignment.end,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                            TextButton.icon(
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                foregroundColor: const Color(0xFFD8A24A),
+                              ),
+                              icon: const Text('✨', style: TextStyle(fontSize: 14)),
+                              label: const Text(
+                                '让 AI 按角色写故事',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                              onPressed: _isProcessing ? null : _openStoryComposer,
+                            ),
                             TextButton.icon(
                               style: TextButton.styleFrom(
                                 visualDensity: VisualDensity.compact,
@@ -418,7 +473,8 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                               ),
                               onPressed: () => _textCtrl.clear(),
                             ),
-                          ],
+                            ],
+                          ),
                         ),
                       ],
                     ),
