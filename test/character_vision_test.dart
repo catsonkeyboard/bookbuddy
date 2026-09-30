@@ -297,4 +297,52 @@ void main() {
     expect(text, contains('的定妆照'));
     expect(text, isNot(contains('真实玩具或物件照片')));
   });
+
+  test('OpenAI 类生图通道 404 降级到 chat 接口时，照片不会被带上', () async {
+    final sent = <dynamic>[];
+    var calls = 0;
+    final dio = Dio()
+      ..interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            sent.add(options.data);
+            calls++;
+            if (calls == 1) {
+              handler.reject(
+                DioException(
+                  requestOptions: options,
+                  response: Response(requestOptions: options, statusCode: 404, data: {}),
+                  type: DioExceptionType.badResponse,
+                ),
+              );
+              return;
+            }
+            handler.resolve(
+              Response(
+                requestOptions: options,
+                data: {
+                  'choices': [
+                    {'message': {'content': 'no image'}},
+                  ],
+                },
+              ),
+            );
+          },
+        ),
+      );
+    await BookEngineService(dio: dio).generateCharacterReference(
+      settings: AppSettings(
+        imageType: 'openai',
+        imageBaseUrl: 'https://example.test/v1',
+        imageModel: 'dall-e-3',
+        imageApiKey: 'k',
+      ),
+      style: style,
+      character: stone,
+      photoReferenceBase64: photo,
+    );
+    expect(sent, hasLength(2));
+    expect(jsonEncode(sent.last), isNot(contains(photo)));
+    expect(jsonEncode(sent.last), isNot(contains('真实玩具或物件照片')));
+  });
 }

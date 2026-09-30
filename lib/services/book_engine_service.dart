@@ -52,7 +52,7 @@ class CharacterCardDraft {
 }
 
 /// 从角色库选中、要固定进本书的角色：卡片本体 + 当前画风的定妆图（可能为空）。
-/// photoBase64 留给拍照阶段使用，P1 恒为空。
+/// photoBase64 是卡片照片，只在审核页为书内外貌未改的卡片角色生成定妆照时使用，不会进入分镜或故事页请求。
 class PinnedCharacter {
   final CharacterCard card;
   final String? anchorBase64;

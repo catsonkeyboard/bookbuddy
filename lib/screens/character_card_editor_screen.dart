@@ -212,9 +212,32 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
     }
   }
 
+  /// Android 拍照时进程被回收后找回的照片：新建角色直接使用；
+  /// 已保存的角色先确认，避免把别的角色的照片覆盖到这张卡上。
   Future<void> _recoverLostPhoto() async {
     final bytes = await _photoPicker.retrieveLost();
-    if (bytes != null && mounted) await _setPhoto(bytes);
+    if (bytes == null || !mounted) return;
+    if (!_isNew) {
+      final use = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('找回了上次拍的照片'),
+          content: Text('要把它用在「${_card.name}」上吗？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('使用'),
+            ),
+          ],
+        ),
+      );
+      if (use != true || !mounted) return;
+    }
+    await _setPhoto(bytes);
   }
 
   Future<void> _pickPhoto(PhotoSource source) async {
@@ -651,7 +674,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
               ),
               const SizedBox(height: 28),
               const Text(
-                '照片只保存在本机；识别和生成定妆图时会各上传一次，故事页不会上传照片。修改角色卡只影响之后新建的绘本。',
+                '照片只保存在本机；只在「让 AI 认识它」和生成定妆图时上传给你配置的模型服务，故事分镜和故事页不会上传照片。修改角色卡只影响之后新建的绘本。',
                 style: TextStyle(fontSize: 12, color: Colors.grey),
               ),
               const SizedBox(height: 16),

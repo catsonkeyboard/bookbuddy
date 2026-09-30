@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -82,7 +83,7 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
   @override
   void dispose() {
     // 离开页面时确保释放屏幕常亮锁
-    WakelockPlus.disable();
+    unawaited(WakelockPlus.disable().catchError((_) {}));
     super.dispose();
   }
 

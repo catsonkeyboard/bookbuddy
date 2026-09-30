@@ -16,10 +16,11 @@ import 'package:image/image.dart' as img;
 import 'support/run_io.dart';
 
 class FakePhotoPicker extends PhotoPickerService {
-  FakePhotoPicker({this.photo, this.camera = true});
+  FakePhotoPicker({this.photo, this.camera = true, this.lost});
 
   final Uint8List? photo;
   final bool camera;
+  final Uint8List? lost;
   final List<PhotoSource> requests = [];
 
   @override
@@ -32,7 +33,7 @@ class FakePhotoPicker extends PhotoPickerService {
   }
 
   @override
-  Future<Uint8List?> retrieveLost() async => null;
+  Future<Uint8List?> retrieveLost() async => lost;
 }
 
 Dio recordingDio(List<dynamic> sent, Map<String, dynamic> Function() responder) =>
@@ -113,6 +114,8 @@ void main() {
     required PhotoPickerService picker,
     BookEngineService? engine,
     AppSettings? settings,
+    bool Function()? until,
+    int maxRounds = 60,
   }) async {
     tester.view.physicalSize = const Size(1000, 2600);
     tester.view.devicePixelRatio = 1.0;
@@ -145,7 +148,10 @@ void main() {
         ),
       );
       await tester.tap(find.text('打开编辑页'));
-    }, until: () => find.byType(CharacterCardEditorScreen).evaluate().isNotEmpty);
+    },
+        until: until ??
+            () => find.byType(CharacterCardEditorScreen).evaluate().isNotEmpty,
+        maxRounds: maxRounds);
   }
 
   Future<void> pickFromGallery(WidgetTester tester) => runIo(
@@ -402,6 +408,59 @@ void main() {
     expect(cardDirs(dir), hasLength(1));
 
     await leaveEditor(tester);
+  });
+
+  testWidgets('新建角色时自动使用找回的照片', (tester) async {
+    // 找回的照片在页面打开时就开始处理（忙碌转圈），所以要等「移除照片」出现再让页面静止。
+    await pumpEditor(
+      tester,
+      picker: FakePhotoPicker(lost: toyPhoto()),
+      until: () => find.text('移除照片').evaluate().isNotEmpty,
+      maxRounds: 120,
+    );
+    expect(find.text('移除照片'), findsOneWidget);
+
+    final dirs = cardDirs(dir);
+    expect(dirs, hasLength(1));
+    expect(File('${dirs.single.path}/photo.jpg').existsSync(), isTrue);
+
+    await leaveEditor(tester);
+  });
+
+  testWidgets('已保存角色找回照片时先确认，取消后不覆盖', (tester) async {
+    final photoBytes = Uint8List.fromList([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+    late CharacterCard card;
+    await tester.runAsync(() async {
+      final path = await storage.writeImage('card_toy', 'photo.jpg', photoBytes);
+      card = CharacterCard(
+        id: 'card_toy',
+        source: CharacterCardSource.photo,
+        name: '豆豆',
+        appearance: '绿色',
+        photoPath: path,
+      );
+      await storage.saveCard(card);
+    });
+    final cardsJsonBefore = File('${dir.path}/cards.json').readAsStringSync();
+
+    await pumpEditor(tester, card: card, picker: FakePhotoPicker(lost: toyPhoto()));
+    await runIo(
+      tester,
+      () async {},
+      until: () => find.text('找回了上次拍的照片').evaluate().isNotEmpty,
+    );
+    expect(find.text('要把它用在「豆豆」上吗？'), findsOneWidget);
+
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    await runIo(tester, () async {}, maxRounds: 5);
+
+    expect(find.text('找回了上次拍的照片'), findsNothing);
+    expect(File('${dir.path}/card_toy/photo.jpg').readAsBytesSync(), photoBytes);
+    expect(File('${dir.path}/cards.json').readAsStringSync(), cardsJsonBefore);
+    final saved = (jsonDecode(File('${dir.path}/cards.json').readAsStringSync()) as List)
+        .single as Map<String, dynamic>;
+    expect(saved['photoPath'], 'card_toy/photo.jpg');
   });
 
   test('真实取图服务只在手机上提供拍照', () {
