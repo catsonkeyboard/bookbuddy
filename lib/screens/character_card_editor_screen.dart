@@ -244,7 +244,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
       _card
         ..photoPath = path
         ..source = CharacterCardSource.photo;
-      if (!_isNew) await _storage.saveCard(_card);
+      if (!_isNew) await _storage.setPhoto(_card.id, path);
       if (mounted) setState(() => _photoBytes = processed);
     } on FormatException catch (e) {
       _toast(e.message, error: true);
@@ -263,12 +263,12 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
       _busyText = '正在移除照片...';
     });
     try {
+      if (!_isNew) await _storage.setPhoto(_card.id, null);
       await _storage.deleteImage(path);
       await FileImage(await _storage.imageFile(path)).evict();
       _card
         ..photoPath = null
         ..source = CharacterCardSource.manual;
-      if (!_isNew) await _storage.saveCard(_card);
       if (mounted) setState(() => _photoBytes = null);
     } catch (e) {
       _toast('移除照片失败: $e', error: true);

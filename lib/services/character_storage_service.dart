@@ -210,6 +210,25 @@ class CharacterStorageService {
     });
   }
 
+  /// 只更新卡片的照片路径与来源（有照片为 photo，否则 manual），不覆盖其它字段。
+  /// 卡片不存在时什么也不做。
+  Future<void> setPhoto(String cardId, String? photoPath) async {
+    if (!isValidId(cardId)) {
+      throw ArgumentError('Card id is not a valid directory name: $cardId');
+    }
+    await _mutate((cards) {
+      for (final card in cards) {
+        if (card.id == cardId) {
+          card
+            ..photoPath = photoPath
+            ..source = photoPath == null
+                ? CharacterCardSource.manual
+                : CharacterCardSource.photo;
+        }
+      }
+    });
+  }
+
   static bool _isPng(Uint8List bytes) =>
       bytes.length >= 4 &&
       bytes[0] == 0x89 &&

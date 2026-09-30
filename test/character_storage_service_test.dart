@@ -278,4 +278,22 @@ void main() {
   test('deleteImage 拒绝逃出角色库目录的路径', () async {
     await expectLater(storage.deleteImage('../x.jpg'), throwsArgumentError);
   });
+
+  test('setPhoto 只改照片路径与来源，不动其它字段', () async {
+    await storage.saveCard(_card('card_a', '豆豆'));
+    await storage.setPhoto('card_a', 'card_a/photo.jpg');
+    var card = (await storage.loadCards()).single;
+    expect(card.photoPath, 'card_a/photo.jpg');
+    expect(card.source, CharacterCardSource.photo);
+    expect(card.name, '豆豆');
+
+    await storage.setPhoto('card_a', null);
+    card = (await storage.loadCards()).single;
+    expect(card.photoPath, isNull);
+    expect(card.source, CharacterCardSource.manual);
+
+    await storage.setPhoto('card_missing', 'x/photo.jpg');
+    expect((await storage.loadCards()).single.id, 'card_a');
+    await expectLater(storage.setPhoto('../evil', null), throwsArgumentError);
+  });
 }

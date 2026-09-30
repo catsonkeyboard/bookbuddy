@@ -358,6 +358,44 @@ void main() {
     expect(saved['source'], 'manual');
   });
 
+  testWidgets('保存校验失败后移除照片，不会把未通过校验的表单一并存盘', (tester) async {
+    final photoBytes = Uint8List.fromList([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+    late CharacterCard card;
+    await tester.runAsync(() async {
+      final path = await storage.writeImage('card_toy', 'photo.jpg', photoBytes);
+      card = CharacterCard(
+        id: 'card_toy',
+        source: CharacterCardSource.photo,
+        name: '豆豆',
+        appearance: '绿色',
+        photoPath: path,
+      );
+      await storage.saveCard(card);
+    });
+    await pumpEditor(tester, card: card, picker: FakePhotoPicker());
+    await runIo(tester, () async {}, until: () => find.text('移除照片').evaluate().isNotEmpty);
+
+    // 清空角色名后保存：校验失败，但工作副本已经被表单值改写。
+    await tester.enterText(find.widgetWithText(TextField, '角色名 *'), '');
+    await tester.pump();
+    await tester.tap(find.text('保存'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('请填写角色名和外貌'), findsOneWidget);
+
+    await runIo(
+      tester,
+      () => tester.tap(find.text('移除照片')),
+      until: () => find.text('移除照片').evaluate().isEmpty,
+    );
+    expect(File('${dir.path}/card_toy/photo.jpg').existsSync(), isFalse);
+    final saved = (jsonDecode(File('${dir.path}/cards.json').readAsStringSync()) as List)
+        .single as Map<String, dynamic>;
+    expect(saved['name'], '豆豆');
+    expect(saved['photoPath'], isNull);
+    expect(saved['source'], 'manual');
+  });
+
   testWidgets('新建角色选了照片却没保存就离开时清理照片目录', (tester) async {
     await pumpEditor(tester, picker: FakePhotoPicker(photo: toyPhoto()));
     await pickFromGallery(tester);
