@@ -251,4 +251,106 @@ void main() {
     );
     expect((openAiBoard.single as Map).containsKey('temperature'), isFalse);
   });
+
+  test('回复里的字符串含真实换行或英文引号时给出约定的格式错误', () async {
+    // 手工拼一个非法 JSON：story 值里有真实换行与未转义的英文双引号。
+    const broken = '{"title": "坏掉的", "story": "第一段。\n第二段说 "你好"。"}';
+    final engine = BookEngineService(dio: fakeOpenAiDio(broken, []));
+    await expectLater(
+      engine.composeStory(
+        settings: openAiSettings(),
+        cards: [dino()],
+        brief: '随便讲一个。',
+      ),
+      throwsA(
+        isA<FormatException>().having(
+          (e) => e.message,
+          'message',
+          '故事生成结果格式不正确',
+        ),
+      ),
+    );
+  });
+
+  test('系统提示词要求转义换行并使用中文引号', () async {
+    final sent = <dynamic>[];
+    final engine = BookEngineService(dio: fakeOpenAiDio(storyJson, sent));
+    await engine.composeStory(
+      settings: openAiSettings(),
+      cards: [dino()],
+      brief: '随便讲一个。',
+    );
+    final system = (sent.single as Map)['messages'][0]['content'] as String;
+    expect(system, contains(r'换行必须写成 \n 转义'));
+    expect(system, contains('中文引号'));
+  });
+
+  test('网关以 400 拒绝 temperature 时去掉它重试一次', () async {
+    final sent = <dynamic>[];
+    var calls = 0;
+    final dio = Dio()
+      ..interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            sent.add(options.data);
+            calls++;
+            if (calls == 1) {
+              handler.reject(
+                DioException(
+                  requestOptions: options,
+                  response: Response(
+                    requestOptions: options,
+                    statusCode: 400,
+                    data: {
+                      'error': {
+                        'message': "Unsupported value: 'temperature' does not support 0.8 with this model.",
+                      },
+                    },
+                  ),
+                  type: DioExceptionType.badResponse,
+                ),
+              );
+              return;
+            }
+            handler.resolve(
+              Response(
+                requestOptions: options,
+                data: {
+                  'choices': [
+                    {'message': {'content': storyJson}},
+                  ],
+                },
+              ),
+            );
+          },
+        ),
+      );
+    final result = await BookEngineService(dio: dio).composeStory(
+      settings: openAiSettings(),
+      cards: [dino()],
+      brief: '随便讲一个。',
+    );
+    expect(result.title, '豆豆的雨天');
+    expect(sent, hasLength(2));
+    expect((sent.first as Map)['temperature'], 0.8);
+    expect((sent.last as Map).containsKey('temperature'), isFalse);
+  });
+
+  test('story 以数组返回时按段落用空行拼接', () async {
+    final engine = BookEngineService(
+      dio: fakeOpenAiDio(
+        jsonEncode({
+          'title': '分段',
+          'story': ['第一段。', '第二段。'],
+        }),
+        [],
+      ),
+    );
+    final result = await engine.composeStory(
+      settings: openAiSettings(),
+      cards: [dino()],
+      brief: '随便讲一个。',
+    );
+    expect(result.story, '第一段。\n\n第二段。');
+  });
 }

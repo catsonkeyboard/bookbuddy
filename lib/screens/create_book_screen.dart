@@ -180,7 +180,7 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       if (overwrite != true || !mounted) return;
     }
     setState(() {
-      _titleCtrl.text = result.title;
+      if (result.title.isNotEmpty) _titleCtrl.text = result.title;
       _textCtrl.text = result.story;
     });
   }

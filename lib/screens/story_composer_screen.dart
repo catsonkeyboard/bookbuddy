@@ -138,6 +138,7 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
   void _restoreDraft() {
     final draft = _pendingDraft;
     if (draft == null) return;
+    if (_hasStory) _history.add(_StoryVersion(_titleCtrl.text, _storyCtrl.text));
     _briefCtrl.text = draft['brief']?.toString() ?? '';
     _titleCtrl.text = draft['title']?.toString() ?? '';
     _storyCtrl.text = draft['story']?.toString() ?? '';
@@ -205,7 +206,10 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
       _titleCtrl.text = result.title;
       _storyCtrl.text = result.story;
       if (revise) _feedbackCtrl.clear();
-      setState(() => _hasStory = true);
+      setState(() {
+        _hasStory = true;
+        _pendingDraft = null;
+      });
     } on FormatException catch (e) {
       _toast(e.message, error: true);
     } on ArgumentError catch (e) {
@@ -225,13 +229,14 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
     setState(() {});
   }
 
-  Future<void> _useStory() async {
+  void _useStory() {
     final result = StoryDraftResult(
       title: _titleCtrl.text.trim(),
       story: _storyCtrl.text.trim(),
     );
-    await _clearDraft();
-    if (!mounted) return;
+    _saveTimer?.cancel();
+    // 草稿清理放到后台，弹出不再等待平台通道，避免等待期间重复点击造成二次弹出。
+    unawaited(_clearDraft());
     Navigator.pop(context, result);
   }
 
@@ -270,8 +275,8 @@ class _StoryComposerScreenState extends State<StoryComposerScreen> {
                           style: TextStyle(fontSize: 13),
                         ),
                       ),
-                      TextButton(onPressed: _discardDraft, child: const Text('丢弃')),
-                      FilledButton(onPressed: _restoreDraft, child: const Text('恢复')),
+                      TextButton(onPressed: _busy ? null : _discardDraft, child: const Text('丢弃')),
+                      FilledButton(onPressed: _busy ? null : _restoreDraft, child: const Text('恢复')),
                     ],
                   ),
                 ),

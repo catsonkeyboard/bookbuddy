@@ -91,7 +91,7 @@ ${_storyCastBlock(cards)}
 - 正文 400 到 700 字；分 8 到 12 个自然段，每段是一个可以画出来的场景，为后续分镜留好接口。
 - 对话简短，符合孩子的理解力；结尾给孩子一点温暖的感受，不要生硬说教。
 ## 输出格式
-只输出合法 JSON：{"title": "故事标题（不超过 12 个字）", "story": "正文，段落之间用换行分隔"}
+只输出合法 JSON：{"title": "故事标题（不超过 12 个字）", "story": "正文，段落之间用换行分隔"}。story 字符串里的换行必须写成 \\n 转义，不要输出真实换行；对话请用中文引号“”，不要用英文双引号。
 ''';
 
     final isRevision = currentStory != null && currentStory.trim().isNotEmpty;
@@ -116,14 +116,38 @@ $trimmedBrief
 请据此创作故事，只输出 JSON。
 ''';
 
-    final raw = await _callLlm(
-      settings: settings,
-      systemPrompt: systemPrompt,
-      userPrompt: userPrompt,
-      temperature: 0.8,
-    );
-    final parsed = _extractJson(raw);
-    final story = parsed is Map ? (parsed['story']?.toString().trim() ?? '') : '';
+    String raw;
+    try {
+      raw = await _callLlm(
+        settings: settings,
+        systemPrompt: systemPrompt,
+        userPrompt: userPrompt,
+        temperature: 0.8,
+      );
+    } on DioException catch (e) {
+      // 部分 OpenAI 兼容的推理模型不接受自定义 temperature（400），去掉后重试一次。
+      final body = '${e.response?.data ?? ''}';
+      if (e.response?.statusCode == 400 && body.contains('temperature')) {
+        raw = await _callLlm(
+          settings: settings,
+          systemPrompt: systemPrompt,
+          userPrompt: userPrompt,
+        );
+      } else {
+        rethrow;
+      }
+    }
+    dynamic parsed;
+    try {
+      parsed = _extractJson(raw);
+    } on FormatException {
+      throw const FormatException('故事生成结果格式不正确');
+    }
+    final rawStory = parsed is Map ? parsed['story'] : null;
+    final story = switch (rawStory) {
+      List list => list.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).join('\n\n'),
+      _ => rawStory?.toString().trim() ?? '',
+    };
     if (story.isEmpty) {
       throw const FormatException('故事生成结果格式不正确');
     }
