@@ -1,7 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -10,6 +11,8 @@ import '../models/character_card.dart';
 import '../models/style_catalog.dart';
 import '../services/book_engine_service.dart';
 import '../services/character_storage_service.dart';
+import '../services/photo_picker_service.dart';
+import '../services/photo_preprocessor.dart';
 import '../services/settings_service.dart';
 import 'settings_screen.dart';
 
@@ -19,6 +22,7 @@ class CharacterCardEditorScreen extends StatefulWidget {
   final CharacterStorageService? storage;
   final BookEngineService? engine;
   final Future<AppSettings> Function()? loadSettings;
+  final PhotoPickerService? photoPicker;
 
   const CharacterCardEditorScreen({
     super.key,
@@ -26,6 +30,7 @@ class CharacterCardEditorScreen extends StatefulWidget {
     this.storage,
     this.engine,
     this.loadSettings,
+    this.photoPicker,
   });
 
   @override
@@ -37,6 +42,10 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
   late final CharacterStorageService _storage;
   late final BookEngineService _engine;
   late final Future<AppSettings> Function() _loadSettings;
+  late final PhotoPickerService _photoPicker;
+
+  /// 当前照片（已预处理的 JPEG 字节）；没有照片为 null。
+  Uint8List? _photoBytes;
 
   /// 工作副本：编辑模式下是传入卡片的深拷贝，保存前不影响原对象。
   late CharacterCard _card;
@@ -78,10 +87,17 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
     _personalityCtrl = TextEditingController(text: _card.personality);
     _catchphraseCtrl = TextEditingController(text: _card.catchphrase);
     _savedLook = _lookOf(_card);
+    _photoPicker = widget.photoPicker ?? PhotoPickerService();
+    _loadPhoto();
+    _recoverLostPhoto();
   }
 
   @override
   void dispose() {
+    // 新建且从未保存的角色：照片不应留在本机。
+    if (_isNew && _card.photoPath != null) {
+      unawaited(_storage.deleteCard(_card.id).catchError((_) {}));
+    }
     for (final c in [
       _nameCtrl,
       _speciesCtrl,
@@ -184,6 +200,160 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
     }
   }
 
+  Future<void> _loadPhoto() async {
+    final path = _card.photoPath;
+    if (path == null) return;
+    try {
+      final b64 = await _storage.readImageBase64(path);
+      if (b64 == null || !mounted) return;
+      setState(() => _photoBytes = base64Decode(b64));
+    } catch (_) {
+      // 照片文件丢失或路径异常：当作没有照片。
+    }
+  }
+
+  Future<void> _recoverLostPhoto() async {
+    final bytes = await _photoPicker.retrieveLost();
+    if (bytes != null && mounted) await _setPhoto(bytes);
+  }
+
+  Future<void> _pickPhoto(PhotoSource source) async {
+    if (_busy) return;
+    final Uint8List? bytes;
+    try {
+      bytes = await _photoPicker.pick(source);
+    } catch (e) {
+      _toast('无法打开相机或相册: $e', error: true);
+      return;
+    }
+    if (bytes == null || !mounted) return;
+    await _setPhoto(bytes);
+  }
+
+  /// 预处理（后台 isolate）→ 落盘 → 已保存的卡片立即更新元数据。
+  Future<void> _setPhoto(Uint8List raw) async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _busyText = '正在处理照片...';
+    });
+    try {
+      final processed = await compute(preprocessPhoto, raw);
+      final path = await _storage.writeImage(_card.id, 'photo.jpg', processed);
+      await FileImage(await _storage.imageFile(path)).evict();
+      _card
+        ..photoPath = path
+        ..source = CharacterCardSource.photo;
+      if (!_isNew) await _storage.saveCard(_card);
+      if (mounted) setState(() => _photoBytes = processed);
+    } on FormatException catch (e) {
+      _toast(e.message, error: true);
+    } catch (e) {
+      _toast('保存照片失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _removePhoto() async {
+    final path = _card.photoPath;
+    if (_busy || path == null) return;
+    setState(() {
+      _busy = true;
+      _busyText = '正在移除照片...';
+    });
+    try {
+      await _storage.deleteImage(path);
+      await FileImage(await _storage.imageFile(path)).evict();
+      _card
+        ..photoPath = null
+        ..source = CharacterCardSource.manual;
+      if (!_isNew) await _storage.saveCard(_card);
+      if (mounted) setState(() => _photoBytes = null);
+    } catch (e) {
+      _toast('移除照片失败: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _recognize() async {
+    final photo = _photoBytes;
+    if (_busy || photo == null) return;
+    setState(() {
+      _busy = true;
+      _busyText = '正在认识它...';
+    });
+    CharacterCardDraft? draft;
+    try {
+      final settings = await _loadSettings();
+      if (!mounted) return;
+      if (settings.llmApiKey.isEmpty) {
+        _toast('⚠️ 请先在设置里填写 LLM API Key', error: true);
+        return;
+      }
+      draft = await _engine.describeCharacterFromPhoto(
+        settings: settings,
+        photoBase64: base64Encode(photo),
+        mimeType: 'image/jpeg',
+      );
+    } on FormatException catch (e) {
+      _toast(e.message, error: true);
+    } catch (e) {
+      _toast(
+        '识别失败: $e。如果当前文本模型不支持图片输入，请在设置里换成 Gemini、GPT-4o 等多模态模型。',
+        error: true,
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    if (draft == null || !mounted) return;
+    await _applyDraft(draft);
+  }
+
+  /// 把识图结果填进表单；已有输入时让用户选择只补空白还是全部覆盖。
+  Future<void> _applyDraft(CharacterCardDraft d) async {
+    final fields = <TextEditingController, String>{
+      _nameCtrl: d.name,
+      _speciesCtrl: d.species,
+      _appearanceCtrl: d.appearance,
+      _outfitCtrl: d.defaultOutfit,
+      _personalityCtrl: d.personality,
+      _catchphraseCtrl: d.catchphrase,
+    };
+    var overwriteAll = true;
+    if (fields.keys.any((c) => c.text.trim().isNotEmpty)) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('用识别结果填写表单？'),
+          content: const Text('你已经填写了部分内容。可以只补空白项，也可以全部替换成识别结果。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'blank'),
+              child: const Text('只填空白项'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'all'),
+              child: const Text('全部覆盖'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || choice == null || choice == 'cancel') return;
+      overwriteAll = choice == 'all';
+    }
+    fields.forEach((ctrl, value) {
+      if (overwriteAll || ctrl.text.trim().isEmpty) ctrl.text = value;
+    });
+    if (overwriteAll) setState(() => _kind = d.kind);
+    _toast('已填入识别结果，请检查后保存');
+  }
+
   /// 校验并保存 → 读设置 → 通道前置检查 → 生成 → 落盘并写回卡片映射。
   Future<void> _generateAnchor() async {
     if (!await _save()) return;
@@ -211,9 +381,12 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('当前生图通道不支持参考图'),
-          content: const Text(
-            '定妆图只能按文字生成，后续绘本每页可能出现外貌不一致。'
-            '建议切换到 Gemini 图像模型（如 gemini-2.5-flash-image）或腾讯混元。',
+          content: Text(
+            _photoBytes != null
+                ? '定妆图只能按文字生成，照片不会被参考，后续绘本每页可能出现外貌不一致。'
+                    '建议切换到 Gemini 图像模型（如 gemini-2.5-flash-image）或腾讯混元。'
+                : '定妆图只能按文字生成，后续绘本每页可能出现外貌不一致。'
+                    '建议切换到 Gemini 图像模型（如 gemini-2.5-flash-image）或腾讯混元。',
           ),
           actions: [
             TextButton(
@@ -258,6 +431,8 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
         settings: settings,
         style: style,
         character: _card.toBookCharacter(),
+        photoReferenceBase64:
+            _photoBytes == null ? null : base64Encode(_photoBytes!),
       );
       if (image == null || image.isEmpty) {
         throw StateError('生图接口未返回图片');
@@ -312,6 +487,57 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
                 ),
                 const SizedBox(height: 16),
               ],
+              _sectionTitle('📷 照片（可选）'),
+              if (_photoBytes != null) ...[
+                Container(
+                  height: 180,
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.4),
+                    ),
+                  ),
+                  child: Image.memory(
+                    _photoBytes!,
+                    fit: BoxFit.contain,
+                    errorBuilder: (ctx, error, stack) => const Center(
+                      child: Icon(Icons.broken_image_outlined, color: Colors.grey),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (_photoPicker.supportsCamera)
+                    OutlinedButton.icon(
+                      onPressed: _busy ? null : () => _pickPhoto(PhotoSource.camera),
+                      icon: const Icon(Icons.photo_camera_outlined),
+                      label: const Text('拍照'),
+                    ),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : () => _pickPhoto(PhotoSource.gallery),
+                    icon: const Icon(Icons.photo_library_outlined),
+                    label: const Text('从相册选择'),
+                  ),
+                  if (_photoBytes != null)
+                    TextButton.icon(
+                      onPressed: _busy ? null : _removePhoto,
+                      icon: const Icon(Icons.delete_outline),
+                      label: const Text('移除照片'),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              FilledButton.tonalIcon(
+                onPressed: (_busy || _photoBytes == null) ? null : _recognize,
+                icon: const Icon(Icons.auto_awesome),
+                label: const Text('让 AI 认识它'),
+              ),
+              const SizedBox(height: 24),
               _sectionTitle('🧸 基本设定'),
               TextField(
                 controller: _nameCtrl,
@@ -425,7 +651,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
               ),
               const SizedBox(height: 28),
               const Text(
-                '修改角色卡只影响之后新建的绘本。',
+                '照片只保存在本机；识别和生成定妆图时会各上传一次，故事页不会上传照片。修改角色卡只影响之后新建的绘本。',
                 style: TextStyle(fontSize: 12, color: Colors.grey),
               ),
               const SizedBox(height: 16),
