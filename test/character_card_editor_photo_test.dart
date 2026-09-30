@@ -183,6 +183,8 @@ void main() {
   testWidgets('选图后照片压缩为 JPEG 落盘，保存后卡片来源为照片', (tester) async {
     await pumpEditor(tester, picker: FakePhotoPicker(photo: toyPhoto()));
     await pickFromGallery(tester);
+    // 还没有定妆图，不提示过时。
+    expect(find.text('照片已更新'), findsNothing);
 
     final dirs = cardDirs(dir);
     expect(dirs, hasLength(1));
@@ -315,6 +317,69 @@ void main() {
     final parts = (sent.single as Map)['contents'][0]['parts'] as List;
     expect(parts.first['inlineData']['data'], photoOnDisk);
     expect(parts[1]['text'], contains('真实玩具或物件照片'));
+  });
+
+  testWidgets('已有定妆图的卡片换照片后提示定妆图可能过时，重新生成后提示消失', (tester) async {
+    const staleHint = '这张定妆图画于更换照片之前，可能已过时，建议重新生成。';
+    final png = base64Encode([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]);
+    late CharacterCard card;
+    await tester.runAsync(() async {
+      card = CharacterCard(id: 'card_toy', name: '豆豆', appearance: '绿色');
+      await storage.saveCard(card);
+      final path = await storage.saveAnchor(
+        'card_toy',
+        'watercolor',
+        base64Encode([0x89, 0x50, 0x4e, 0x47, 1, 1, 1, 1]),
+      );
+      card.anchorImagePaths['watercolor'] = path;
+    });
+    await pumpEditor(
+      tester,
+      card: card,
+      picker: FakePhotoPicker(photo: toyPhoto()),
+      engine: BookEngineService(
+        dio: recordingDio([], () => {
+              'candidates': [
+                {
+                  'content': {
+                    'parts': [
+                      {
+                        'inlineData': {'mimeType': 'image/png', 'data': png},
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+      ),
+    );
+    expect(find.text(staleHint), findsNothing);
+
+    await runIo(
+      tester,
+      () => tester.tap(find.text('从相册选择')),
+      until: () => find.text('照片已更新').evaluate().isNotEmpty,
+      maxRounds: 120,
+    );
+    expect(find.textContaining('已有 1 张定妆图'), findsOneWidget);
+    await tester.tap(find.text('知道了'));
+    await tester.pumpAndSettle();
+    expect(find.text(staleHint), findsOneWidget);
+    // 换照片不清空定妆图。
+    final saved = (jsonDecode(File('${dir.path}/cards.json').readAsStringSync()) as List)
+        .single as Map<String, dynamic>;
+    expect(saved['anchorImagePaths'], {'watercolor': 'card_toy/anchor_watercolor.png'});
+    expect(saved['photoPath'], 'card_toy/photo.jpg');
+
+    await runIo(
+      tester,
+      () => tester.tap(find.text('重新生成水彩童话定妆图')),
+      until: () =>
+          find.text('定妆图已保存，请检查外貌是否符合预期').evaluate().isNotEmpty &&
+          find.byType(CircularProgressIndicator).evaluate().isEmpty,
+      maxRounds: 120,
+    );
+    expect(find.text(staleHint), findsNothing);
   });
 
   testWidgets('生图通道不支持参考图时，前置对话框说明照片不会被参考', (tester) async {

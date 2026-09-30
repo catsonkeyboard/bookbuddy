@@ -62,6 +62,9 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
   late final List<String> _characterCardIds;
   bool _touchedCards = false;
 
+  /// 卡片里已有当前画风定妆图的角色卡 id：重绘这些角色时先确认是否覆盖卡片里的定妆图。
+  late final Set<String> _cardsWithAnchor;
+
   @override
   void initState() {
     super.initState();
@@ -69,6 +72,10 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
     _storage = widget.bookStorage ?? BookStorageService();
     _characterStorage = widget.characterStorage ?? CharacterStorageService();
     _characterCardIds = List.of(widget.characterCardIds);
+    _cardsWithAnchor = {
+      for (final p in widget.pinnedCharacters)
+        if (p.card.anchorImagePaths.containsKey(widget.style.id)) p.card.id,
+    };
     // 深拷贝以允许在界面编辑
     _pages = widget.initialPages
         .map((p) => BookPageItem.fromJson(p.toJson()))
@@ -142,6 +149,7 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
         image,
       );
       await FileImage(await _characterStorage.imageFile(path)).evict();
+      _cardsWithAnchor.add(cardId);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -277,7 +285,50 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
     );
   }
 
-  Future<void> _prepareCharacterReferences({BookCharacter? only}) async {
+  /// 单独重绘某个角色的定妆照。卡片角色的卡片里已有这个画风的定妆图时，
+  /// 先问是否同时更新角色卡，避免悄悄覆盖之后所有新绘本都会用到的形象。
+  Future<void> _regenerateReference(BookCharacter character) async {
+    var writeBackToCard = true;
+    if (_isCardCharacter(character) &&
+        _lookMatchesCard(character) &&
+        _cardsWithAnchor.contains(character.id)) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('重新生成定妆照'),
+          content: Text(
+            '「${character.name}」的角色卡里已经有${widget.style.name}画风的定妆图。'
+            '新定妆照要同时更新到角色卡吗？更新后，之后用这张卡新建的绘本都会用新形象；已生成的绘本不受影响。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'book'),
+              child: const Text('只用于本书'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'card'),
+              child: const Text('同时更新角色卡'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || choice == null || choice == 'cancel') return;
+      writeBackToCard = choice == 'card';
+    }
+    await _prepareCharacterReferences(
+      only: character,
+      writeBackToCard: writeBackToCard,
+    );
+  }
+
+  Future<void> _prepareCharacterReferences({
+    BookCharacter? only,
+    bool writeBackToCard = true,
+  }) async {
     final usedIds = _pages
         .where((page) => page.needIllustration)
         .expand((page) => page.characterIds)
@@ -320,7 +371,9 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
         character.referenceImageBase64 = image;
         await _storage.saveBook(_currentDraft());
         await _touchCardsOnce();
-        if (_isCardCharacter(character) && _lookMatchesCard(character)) {
+        if (writeBackToCard &&
+            _isCardCharacter(character) &&
+            _lookMatchesCard(character)) {
           await _writeBackAnchor(character.id, image);
         }
       }
@@ -962,8 +1015,8 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
                                                         size: 18,
                                                       ),
                                                       onPressed: () =>
-                                                          _prepareCharacterReferences(
-                                                            only: character,
+                                                          _regenerateReference(
+                                                            character,
                                                           ),
                                                     ),
                                                 ],

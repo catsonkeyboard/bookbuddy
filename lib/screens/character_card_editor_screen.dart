@@ -69,6 +69,9 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
   /// 本次会话刚生成的定妆图字节，优先于磁盘文件显示，避免图片缓存显示旧图。
   final Map<String, Uint8List> _freshAnchors = {};
 
+  /// 本次会话换过照片后，画于换照片之前的定妆图画风；重新生成后移除。
+  final Set<String> _staleAnchorStyles = {};
+
   @override
   void initState() {
     super.initState();
@@ -177,6 +180,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
       }
       _card.anchorImagePaths.clear();
       _freshAnchors.clear();
+      _staleAnchorStyles.clear();
       anchorsCleared = true;
     }
     try {
@@ -260,6 +264,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
       _busy = true;
       _busyText = '正在处理照片...';
     });
+    var changed = false;
     try {
       final processed = await compute(preprocessPhoto, raw);
       final path = await _storage.writeImage(_card.id, 'photo.jpg', processed);
@@ -269,6 +274,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
         ..source = CharacterCardSource.photo;
       if (!_isNew) await _storage.setPhoto(_card.id, path);
       if (mounted) setState(() => _photoBytes = processed);
+      changed = true;
     } on FormatException catch (e) {
       _toast(e.message, error: true);
     } catch (e) {
@@ -276,6 +282,30 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+    if (changed) await _warnAnchorsMayBeStale();
+  }
+
+  /// 换照片不会清空定妆图（外貌文字没变），但旧定妆图是按之前的照片画的，提示用户检查。
+  Future<void> _warnAnchorsMayBeStale() async {
+    if (!mounted || _card.anchorImagePaths.isEmpty) return;
+    setState(() => _staleAnchorStyles.addAll(_card.anchorImagePaths.keys));
+    final count = _card.anchorImagePaths.length;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('照片已更新'),
+        content: Text(
+          '这张卡已有 $count 张定妆图，是按之前的照片或描述画的，可能和新照片不一样。'
+          '建议在「定妆图画风」里逐个重新生成。',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _removePhoto() async {
@@ -462,6 +492,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
       }
       final path = await _storage.saveAnchor(_card.id, styleId, image);
       _card.anchorImagePaths[styleId] = path;
+      _staleAnchorStyles.remove(styleId);
       // 同路径覆盖写入后，清掉图片缓存里的旧位图，否则列表页和重新打开的编辑页仍显示旧图。
       await FileImage(await _storage.imageFile(path)).evict();
       _freshAnchors[styleId] = base64Decode(
@@ -662,6 +693,14 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
               ),
               const SizedBox(height: 16),
               _buildAnchorPreview(anchorPath),
+              if (anchorPath != null && _staleAnchorStyles.contains(_styleId))
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    '这张定妆图画于更换照片之前，可能已过时，建议重新生成。',
+                    style: TextStyle(fontSize: 12, color: Colors.orange),
+                  ),
+                ),
               const SizedBox(height: 12),
               FilledButton.icon(
                 onPressed: _busy ? null : _generateAnchor,
