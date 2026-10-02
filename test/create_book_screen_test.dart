@@ -140,7 +140,11 @@ void main() {
     expect(tester.widget<FilterChip>(find.widgetWithText(FilterChip, '豆豆')).selected, isTrue);
 
     // 小满、阿福没有水彩定妆图，豆豆有。
-    expect(find.text('进入审核后会先为 小满、阿福 绘制该画风的定妆照'), findsOneWidget);
+    expect(find.text('将直接使用 豆豆 已有的该画风定妆照'), findsOneWidget);
+    expect(
+      find.text('小满、阿福 还没有该画风的定妆照，生成分镜前会询问是否现在绘制'),
+      findsOneWidget,
+    );
 
     await tester.tap(find.widgetWithText(FilterChip, '豆豆'));
     await tester.pumpAndSettle();
@@ -154,7 +158,184 @@ void main() {
     await tester.tap(find.widgetWithText(FilterChip, '豆豆'));
     await tester.pumpAndSettle();
     expect(find.textContaining('当前生图通道不支持参考图'), findsOneWidget);
-    expect(find.textContaining('进入审核后会先为'), findsNothing);
+    expect(find.textContaining('还没有该画风的定妆照'), findsNothing);
+  });
+
+  group('已选卡片缺少当前画风定妆照', () {
+    final png = base64Encode([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]);
+    final photoBytes = Uint8List.fromList([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9, 9]);
+    final storyboard = {
+      'characters': [
+        {
+          'id': 'card_a',
+          'name': '豆豆',
+          'species': '',
+          'isAnimal': true,
+          'appearance': '外貌 豆豆',
+          'defaultOutfit': '',
+        },
+      ],
+      'groups': {},
+      'scenes': [
+        {
+          'text': '豆豆出发。',
+          'action': '豆豆走出家门',
+          'emotion': '',
+          'composition': '',
+          'characterIds': ['card_a'],
+          'outfitOverrides': {},
+        },
+      ],
+    };
+
+    /// 同一个 Dio 既答分镜（OpenAI 协议）也答生图（Gemini 协议），分别记录请求体。
+    Dio fakeDio(List<dynamic> llmSent, List<dynamic> imageSent) => Dio()
+      ..interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            final isImage = options.uri.toString().contains('generateContent');
+            (isImage ? imageSent : llmSent).add(options.data);
+            handler.resolve(
+              Response(
+                requestOptions: options,
+                data: isImage
+                    ? {
+                        'candidates': [
+                          {
+                            'content': {
+                              'parts': [
+                                {
+                                  'inlineData': {'mimeType': 'image/png', 'data': png},
+                                },
+                              ],
+                            },
+                          },
+                        ],
+                      }
+                    : {
+                        'choices': [
+                          {'message': {'content': jsonEncode(storyboard)}},
+                        ],
+                      },
+              ),
+            );
+          },
+        ),
+      );
+
+    /// 豆豆只有黏土画风的定妆照，新书选的是默认的水彩画风。
+    Future<void> pumpWithCardMissingWatercolor(
+      WidgetTester tester,
+      List<dynamic> llmSent,
+      List<dynamic> imageSent,
+    ) async {
+      await tester.runAsync(() async {
+        final c = card('card_a', '豆豆')
+          ..photoPath = await storage.writeImage('card_a', 'photo.jpg', photoBytes);
+        await storage.saveCard(c);
+        await storage.saveAnchor('card_a', 'claymation', png);
+      });
+      await pumpCreate(
+        tester,
+        engine: BookEngineService(dio: fakeDio(llmSent, imageSent)),
+        settings: AppSettings(
+          llmType: 'openai',
+          llmBaseUrl: 'https://example.test',
+          llmApiKey: 'k',
+          llmModel: 'm',
+          imageType: 'gemini',
+          imageApiKey: 'test-key',
+          imageModel: 'gemini-2.5-flash-image',
+        ),
+      );
+      await tester.tap(find.widgetWithText(FilterChip, '豆豆'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, '可直接粘贴故事全文；若留空仅填书名，AI 将自动构思并续写完整童话...'),
+        '豆豆在雨天迷路了。',
+      );
+      await tester.pump();
+    }
+
+    /// 在真实事件循环里点生成：确认后的请求沿用这次点击的 zone。
+    Future<void> tapGenerateAndWaitForDialog(WidgetTester tester) => runIo(
+          tester,
+          () => tester.tap(find.text('🎬 分析故事并生成分镜 (进入审核)')),
+          until: () => find.text('缺少「水彩童话」画风的定妆照').evaluate().isNotEmpty,
+        );
+
+    Map<String, dynamic> savedCard() =>
+        (jsonDecode(File('${dir.path}/cards.json').readAsStringSync()) as List).single
+            as Map<String, dynamic>;
+
+    testWidgets('生成分镜前先询问；取消则什么都不请求', (tester) async {
+      final llmSent = <dynamic>[];
+      final imageSent = <dynamic>[];
+      await pumpWithCardMissingWatercolor(tester, llmSent, imageSent);
+
+      await tapGenerateAndWaitForDialog(tester);
+      expect(find.textContaining('「豆豆」还没有「水彩童话」画风的定妆照'), findsOneWidget);
+      expect(find.textContaining('「豆豆」已有的画风：3D黏土定格'), findsOneWidget);
+
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      await runIo(tester, () async {}, maxRounds: 5);
+
+      expect(llmSent, isEmpty);
+      expect(imageSent, isEmpty);
+      expect(find.byType(StoryboardReviewScreen), findsNothing);
+      expect(find.text('🎬 分析故事并生成分镜 (进入审核)'), findsOneWidget);
+    });
+
+    testWidgets('选「现在生成」先画定妆照并写回角色卡，再带着它进入审核', (tester) async {
+      final llmSent = <dynamic>[];
+      final imageSent = <dynamic>[];
+      await pumpWithCardMissingWatercolor(tester, llmSent, imageSent);
+
+      await tapGenerateAndWaitForDialog(tester);
+      await runIo(
+        tester,
+        () => tester.tap(find.text('现在生成')),
+        until: () => find.byType(StoryboardReviewScreen).evaluate().isNotEmpty,
+        maxRounds: 160,
+      );
+
+      // 定妆照请求带着卡片照片，结果写回角色卡。
+      expect(imageSent, hasLength(1));
+      expect(jsonEncode(imageSent.single), contains(base64Encode(photoBytes)));
+      expect(savedCard()['anchorImagePaths'], {
+        'claymation': 'card_a/anchor_claymation.png',
+        'watercolor': 'card_a/anchor_watercolor.png',
+      });
+      expect(File('${dir.path}/card_a/anchor_watercolor.png').existsSync(), isTrue);
+
+      final review = tester.widget<StoryboardReviewScreen>(find.byType(StoryboardReviewScreen));
+      expect(review.pinnedCharacters.single.anchorBase64, png);
+      expect(review.pinnedCharacters.single.card.anchorImagePaths, contains('watercolor'));
+      expect(review.initialCharacters.single.referenceImageBase64, png);
+      expect(llmSent, hasLength(1));
+    });
+
+    testWidgets('选「暂不生成」直接生成分镜，定妆照留到审核页', (tester) async {
+      final llmSent = <dynamic>[];
+      final imageSent = <dynamic>[];
+      await pumpWithCardMissingWatercolor(tester, llmSent, imageSent);
+
+      await tapGenerateAndWaitForDialog(tester);
+      await runIo(
+        tester,
+        () => tester.tap(find.text('暂不生成')),
+        until: () => find.byType(StoryboardReviewScreen).evaluate().isNotEmpty,
+        maxRounds: 160,
+      );
+
+      expect(imageSent, isEmpty);
+      expect(savedCard()['anchorImagePaths'], {'claymation': 'card_a/anchor_claymation.png'});
+      final review = tester.widget<StoryboardReviewScreen>(find.byType(StoryboardReviewScreen));
+      expect(review.pinnedCharacters.single.anchorBase64, isNull);
+      expect(review.initialCharacters.single.referenceImageBase64, isNull);
+      expect(find.text('先生成角色定妆照'), findsOneWidget);
+    });
   });
 
   testWidgets('生成时把已选卡片的定妆图与 id 传给引擎和审核页', (tester) async {
