@@ -169,7 +169,7 @@ lib/
    * 生成的插画或音频切勿仅保存在内存中，生成完毕需落盘并通过 `_storage.saveBook()` 及时固化，保证 App 重启后立即可用。
 3. **不得硬编码任何个人 API Key 或 Token**：
    * 所有密钥统一在 `AppSettings` 中动态配置并本地安全存储。
-4. **不要在主线程读取或解析绘本 JSON**：
-   * 一本绘本的 JSON 内嵌每页插画的 base64，十几 MB。列表类界面只取 `BookStorageService.loadBookSummaries()` 的摘要，需要整本时用 `loadBook(id)`；新增的读取逻辑照 `loadCharacterCardUsage()` 的写法放进 `compute(...)`，只把小结果带回主线程。
+4. **不要在主线程读取、解析或编码绘本 JSON**：
+   * 一本绘本的 JSON 内嵌每页插画的 base64，十几 MB。`saveBook()` 的编码、写盘和旧文件校验已在后台 isolate 里完成。列表类界面只取 `BookStorageService.loadBookSummaries()` 的摘要，需要整本时用 `loadBook(id)`；新增的读取逻辑照 `loadCharacterCardUsage()` 的写法放进 `compute(...)`，只把小结果带回主线程。
 5. **运行测试与检查**：
    * 任何改动完成后，务必执行 `$HOME/development/flutter/bin/flutter analyze` 与 `$HOME/development/flutter/bin/flutter test` 确认无回归问题。

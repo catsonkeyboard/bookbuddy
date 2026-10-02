@@ -15,6 +15,28 @@ PictureBook _book(String title) => PictureBook(
   createdAt: DateTime.utc(2026, 9, 26),
 );
 
+/// 记录 toJson 有没有在「当前 isolate」里被调用。静态变量每个 isolate 各有一份，
+/// 编码发生在后台 isolate 时，测试所在的 isolate 看到的仍是 false。
+class _EncodeSpyBook extends PictureBook {
+  static bool encodedOnThisIsolate = false;
+
+  _EncodeSpyBook(String title)
+    : super(
+        id: 'book-1',
+        title: title,
+        styleId: 'watercolor',
+        styleName: 'Watercolor',
+        pages: [BookPageItem(pageIndex: 0, text: 'Once upon a time')],
+        createdAt: DateTime.utc(2026, 9, 26),
+      );
+
+  @override
+  Map<String, dynamic> toJson() {
+    encodedOnThisIsolate = true;
+    return super.toJson();
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory dir;
@@ -98,6 +120,81 @@ void main() {
     await storage.deleteBook('book-1');
     expect(BookStorageService.booksChangedNotifier.value, initialValue + 2);
     expect(await storage.loadBooks(), isEmpty);
+  });
+
+  group('saveBook', () {
+    test('encodes the book off the calling isolate', () async {
+      _EncodeSpyBook.encodedOnThisIsolate = false;
+
+      await storage.saveBook(_EncodeSpyBook('Spy'));
+
+      expect(_EncodeSpyBook.encodedOnThisIsolate, isFalse);
+      expect((await storage.loadBooks()).single.title, 'Spy');
+    });
+
+    test('keeps the file format, non-ASCII text included', () async {
+      // 中文、代理对 emoji、落单的代理项、引号、反斜杠和控制字符。
+      const tricky = '小恐龙 🦕 \uD83E said "hi" \\ \n\t\u0001 end';
+      final book = PictureBook(
+        id: 'book-1',
+        title: tricky,
+        styleId: 'watercolor',
+        styleName: '水彩童话',
+        createdAt: DateTime.utc(2026, 9, 26),
+        pages: [BookPageItem(pageIndex: 0, text: tricky)],
+      );
+
+      await storage.saveBook(book);
+
+      final file = File('${dir.path}/book-1.json');
+      expect(await file.readAsBytes(), utf8.encode(jsonEncode(book.toJson())));
+      final loaded = await storage.loadBook('book-1');
+      expect(loaded!.title, tricky);
+      expect(loaded.pages.single.text, tricky);
+    });
+
+    test('sets a damaged main file aside and keeps the backup', () async {
+      await storage.saveBook(_book('Original'));
+      await storage.saveBook(_book('Updated'));
+      final main = File('${dir.path}/book-1.json');
+      await main.writeAsString('{incomplete', flush: true);
+
+      await storage.saveBook(_book('Recovered'));
+
+      expect((await storage.loadBooks()).single.title, 'Recovered');
+      final names = dir.listSync().map((f) => f.uri.pathSegments.last).toList();
+      final corrupt = names.where((n) => n.startsWith('book-1.json.corrupt.'));
+      expect(corrupt, hasLength(1));
+      expect(
+        await File('${dir.path}/${corrupt.single}').readAsString(),
+        '{incomplete',
+      );
+      expect(
+        PictureBook.fromJson(
+          jsonDecode(await File('${main.path}.bak').readAsString()),
+        ).title,
+        'Original',
+      );
+      expect(names, isNot(contains('book-1.json.tmp')));
+    });
+
+    test('a failed save reports the error and does not block the next one', () async {
+      // 临时文件的位置被一个目录占住，写入必然失败。
+      final blocker = Directory('${dir.path}/book-1.json.tmp');
+      await blocker.create();
+      final ticks = BookStorageService.booksChangedNotifier.value;
+
+      await expectLater(
+        storage.saveBook(_book('Blocked')),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(BookStorageService.booksChangedNotifier.value, ticks);
+      expect(await storage.loadBooks(), isEmpty);
+
+      await blocker.delete();
+      await storage.saveBook(_book('Later'));
+      expect((await storage.loadBooks()).single.title, 'Later');
+    });
   });
 
   group('loadCharacterCardUsage', () {
