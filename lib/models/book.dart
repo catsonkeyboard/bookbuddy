@@ -80,6 +80,33 @@ class PictureBook {
       .toList();
 }
 
+/// 书架列表展示一本绘本所需的全部信息，不带任何插画数据。
+///
+/// 整本 [PictureBook] 内嵌每页插画的 base64，一本十几 MB；书架只拿摘要，
+/// 打开某一本时再单独加载整本。
+class BookSummary {
+  final String id;
+  final String title;
+  final String styleName;
+  final DateTime createdAt;
+  final int pageCount;
+  final bool usesCharacterCards;
+  final int completedIllustrationCount;
+  final int targetIllustrationCount;
+  final bool hasUnfinishedIllustrations;
+
+  BookSummary.of(PictureBook book)
+    : id = book.id,
+      title = book.title,
+      styleName = book.styleName,
+      createdAt = book.createdAt,
+      pageCount = book.pages.length,
+      usesCharacterCards = book.characterCardIds.isNotEmpty,
+      completedIllustrationCount = book.completedIllustrationCount,
+      targetIllustrationCount = book.targetIllustrationCount,
+      hasUnfinishedIllustrations = book.hasUnfinishedIllustrations;
+}
+
 /// 全书共用的角色设定。换装仅由页面的 outfitOverrides 明确指定。
 class BookCharacter {
   final String id;

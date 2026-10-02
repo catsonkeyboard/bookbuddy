@@ -51,6 +51,82 @@ Set<String>? _readCharacterCardIds(File file, String expectedId) {
   }
 }
 
+/// 在后台 isolate 里运行：逐本读出书架目录里的绘本，主文件读不出来就退回备份。
+///
+/// 惰性产出：调用方用完一本再取下一本，内存里同时只有一本书。
+Iterable<PictureBook> _readBooksIn(String dirPath) sync* {
+  for (final id in _bookIdsIn(Directory(dirPath).listSync())) {
+    final book = _readBookOrBackup((dirPath, id));
+    if (book != null) yield book;
+  }
+}
+
+/// 在后台 isolate 里运行。
+PictureBook? _readBookOrBackup((String, String) dirPathAndId) {
+  final (dirPath, id) = dirPathAndId;
+  return _readBookSync(File('$dirPath/$id.json'), id) ??
+      _readBookSync(File('$dirPath/$id.json.bak'), id);
+}
+
+PictureBook? _readBookSync(File file, String expectedId) {
+  try {
+    // 直接从 UTF-8 字节解析，不先转成整个字符串：十几 MB 的文件快三倍左右。
+    final book = PictureBook.fromJson(
+      utf8.decoder.fuse(json.decoder).convert(file.readAsBytesSync())
+          as Map<String, dynamic>,
+    );
+    return book.id == expectedId ? book : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 在后台 isolate 里运行。
+List<PictureBook> _readAllBooks(String dirPath) =>
+    _readBooksIn(dirPath).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+/// 在后台 isolate 里运行：每本书读完只留下摘要。
+List<BookSummary> _readBookSummaries(String dirPath) =>
+    _readBooksIn(dirPath).map(BookSummary.of).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+/// 在后台 isolate 里运行：把整本书编码写盘，上一份有效文件留作备份。
+///
+/// 编码和对旧文件的校验都要过一遍十几 MB 的插画 base64，所以整段不在主线程做。
+/// 直接编码成 UTF-8 字节：先拼出整个 JSON 字符串会多占几十 MB，回收它时主线程也跟着停顿。
+void _writeBookFile((String, PictureBook) dirPathAndBook) {
+  final (dirPath, book) = dirPathAndBook;
+  final file = File('$dirPath/${book.id}.json');
+  final backup = File('${file.path}.bak');
+  final temp = File('${file.path}.tmp');
+  temp.writeAsBytesSync(JsonUtf8Encoder().convert(book.toJson()), flush: true);
+
+  var movedOriginal = false;
+  try {
+    if (file.existsSync()) {
+      if (_readBookSync(file, book.id) != null) {
+        if (backup.existsSync()) backup.deleteSync();
+        file.renameSync(backup.path);
+        movedOriginal = true;
+      } else {
+        // Retain a damaged file for manual recovery and keep any valid backup.
+        final damaged =
+            '${file.path}.corrupt.${DateTime.now().microsecondsSinceEpoch}';
+        file.renameSync(damaged);
+      }
+    }
+    temp.renameSync(file.path);
+  } catch (_) {
+    if (movedOriginal && !file.existsSync() && backup.existsSync()) {
+      backup.copySync(file.path);
+    }
+    rethrow;
+  } finally {
+    if (temp.existsSync()) temp.deleteSync();
+  }
+}
+
 class BookStorageService {
   static const _legacyBooksKey = 'bookbuddy_saved_books';
   static const _migratedKey = 'bookbuddy_books_migrated_to_files';
@@ -80,20 +156,13 @@ class BookStorageService {
 
     final rawList = prefs.getStringList(_legacyBooksKey);
     if (rawList != null && rawList.isNotEmpty) {
-      final dir = await _getBooksDirectory();
       var allMigrated = true;
       for (final raw in rawList) {
         try {
           final book = PictureBook.fromJson(jsonDecode(raw));
           if (book.id.isEmpty) throw const FormatException('Missing book id');
-          final file = File('${dir.path}/${book.id}.json');
-          final backup = File('${file.path}.bak');
           // A newer file may already exist after a partially completed migration.
-          final current = await _readBook(file, book.id);
-          final previous = await _readBook(backup, book.id);
-          if (current == null && previous == null) {
-            await saveBook(book);
-          }
+          if (await loadBook(book.id) == null) await saveBook(book);
         } catch (_) {
           allMigrated = false;
         }
@@ -104,35 +173,37 @@ class BookStorageService {
     await prefs.setBool(_migratedKey, true);
   }
 
-  Future<PictureBook?> _readBook(File file, String expectedId) async {
-    try {
-      final book = PictureBook.fromJson(jsonDecode(await file.readAsString()));
-      return book.id == expectedId ? book : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Load the last known-good copy if a save was interrupted or corrupt.
-  Future<List<PictureBook>> loadBooks() async {
+  Future<Directory> _getMigratedBooksDirectory() async {
     try {
       await _migrateLegacyDataIfNeeded();
     } catch (_) {
       // Existing files are still readable; legacy preferences remain untouched.
     }
-    final dir = await _getBooksDirectory();
-    final ids = _bookIdsIn(await dir.list().toList());
+    return _getBooksDirectory();
+  }
 
-    final results = await Future.wait(
-      ids.map((id) async {
-        final file = File('${dir.path}/$id.json');
-        return await _readBook(file, id) ??
-            await _readBook(File('${file.path}.bak'), id);
-      }),
-    );
-    final books = results.whereType<PictureBook>().toList();
-    books.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    return books;
+  /// 书架列表用：每本绘本的摘要，按创建时间从新到旧。
+  ///
+  /// 一本书的 JSON 带着每页插画的 base64，十几 MB。读取和解析都放在后台 isolate 里
+  /// 逐本进行，只把摘要带回来；主文件损坏或缺失时用上一次保存的备份。
+  Future<List<BookSummary>> loadBookSummaries() async {
+    final dir = await _getMigratedBooksDirectory();
+    return compute(_readBookSummaries, dir.path);
+  }
+
+  /// 打开某一本时加载整本（含插画），同样在后台 isolate 里读取解析。
+  /// 主文件和备份都读不出来时返回 null。
+  Future<PictureBook?> loadBook(String id) async {
+    final dir = await _getBooksDirectory();
+    return compute(_readBookOrBackup, (dir.path, id));
+  }
+
+  /// Load the last known-good copy if a save was interrupted or corrupt.
+  ///
+  /// 所有绘本整本留在内存里，书越多越重；只展示列表请用 [loadBookSummaries]。
+  Future<List<PictureBook>> loadBooks() async {
+    final dir = await _getMigratedBooksDirectory();
+    return compute(_readAllBooks, dir.path);
   }
 
   /// 每张角色卡出演了几本绘本（同一本里重复的卡只算一次）。
@@ -157,7 +228,8 @@ class BookStorageService {
           // A failed earlier save must not block later attempts.
         }
       }
-      await _saveBookUnlocked(book);
+      final dir = await _getBooksDirectory();
+      await compute(_writeBookFile, (dir.path, book));
     }();
     _pendingSaves[book.id] = save;
     try {
@@ -167,39 +239,6 @@ class BookStorageService {
       if (identical(_pendingSaves[book.id], save)) {
         _pendingSaves.remove(book.id);
       }
-    }
-  }
-
-  Future<void> _saveBookUnlocked(PictureBook book) async {
-    final dir = await _getBooksDirectory();
-    final file = File('${dir.path}/${book.id}.json');
-    final backup = File('${file.path}.bak');
-    final temp = File('${file.path}.tmp');
-    final content = jsonEncode(book.toJson());
-    await temp.writeAsString(content, flush: true);
-
-    var movedOriginal = false;
-    try {
-      if (await file.exists()) {
-        if (await _readBook(file, book.id) != null) {
-          if (await backup.exists()) await backup.delete();
-          await file.rename(backup.path);
-          movedOriginal = true;
-        } else {
-          // Retain a damaged file for manual recovery and keep any valid backup.
-          final damaged =
-              '${file.path}.corrupt.${DateTime.now().microsecondsSinceEpoch}';
-          await file.rename(damaged);
-        }
-      }
-      await temp.rename(file.path);
-    } catch (_) {
-      if (movedOriginal && !await file.exists() && await backup.exists()) {
-        await backup.copy(file.path);
-      }
-      rethrow;
-    } finally {
-      if (await temp.exists()) await temp.delete();
     }
   }
 

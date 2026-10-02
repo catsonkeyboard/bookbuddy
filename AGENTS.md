@@ -135,13 +135,13 @@ lib/
 ├── main.dart                          # 应用主入口，主题配置，首页绘本网格展示
 ├── models/
 │   ├── app_settings.dart              # 全局配置模型 (LLM/Image/Fallback/MiniMax TTS)
-│   ├── book.dart                      # 绘本模型 (PictureBook, BookPageItem 包含 audioPath)
+│   ├── book.dart                      # 绘本模型 (PictureBook, BookPageItem 包含 audioPath；BookSummary 为书架列表用的摘要)
 │   ├── character_card.dart            # 角色卡模型 (跨书复用主角：性格/口头禅/按画风缓存的定妆图路径)
 │   ├── fairy_tale_catalog.dart        # 内置经典童话灵感库
 │   └── style_catalog.dart             # 艺术风格预设库 (水彩、皮克斯等)
 ├── services/
 │   ├── book_engine_service.dart       # 分镜大模型与跨接口生图核心引擎
-│   ├── book_storage_service.dart      # 绘本本地持久化存取服务
+│   ├── book_storage_service.dart      # 绘本本地持久化存取服务 (书架用 loadBookSummaries，打开时 loadBook，均在后台 isolate 读取解析)
 │   ├── character_storage_service.dart # 角色库落盘 (bookbuddy_characters/：cards.json 元数据 + 图片文件)
 │   ├── photo_picker_service.dart      # 取图封装 (拍照/相册，Android 丢失照片找回)
 │   ├── photo_preprocessor.dart        # 照片预处理 (摆正、长边 1024、清空 EXIF、JPEG 85)
@@ -169,5 +169,7 @@ lib/
    * 生成的插画或音频切勿仅保存在内存中，生成完毕需落盘并通过 `_storage.saveBook()` 及时固化，保证 App 重启后立即可用。
 3. **不得硬编码任何个人 API Key 或 Token**：
    * 所有密钥统一在 `AppSettings` 中动态配置并本地安全存储。
-4. **运行测试与检查**：
+4. **不要在主线程读取、解析或编码绘本 JSON**：
+   * 一本绘本的 JSON 内嵌每页插画的 base64，十几 MB。`saveBook()` 的编码、写盘和旧文件校验已在后台 isolate 里完成。列表类界面只取 `BookStorageService.loadBookSummaries()` 的摘要，需要整本时用 `loadBook(id)`；新增的读取逻辑照 `loadCharacterCardUsage()` 的写法放进 `compute(...)`，只把小结果带回主线程。
+5. **运行测试与检查**：
    * 任何改动完成后，务必执行 `$HOME/development/flutter/bin/flutter analyze` 与 `$HOME/development/flutter/bin/flutter test` 确认无回归问题。
