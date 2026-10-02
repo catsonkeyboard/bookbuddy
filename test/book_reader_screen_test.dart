@@ -13,12 +13,13 @@ String pagePng(int r, int g, int b) {
   return base64Encode(img.encodePng(src));
 }
 
-PictureBook threePageBook() => PictureBook(
+PictureBook threePageBook({List<BookCharacter> characters = const []}) => PictureBook(
       id: 'book-reader-test',
       title: '豆豆的雨天',
       styleId: 'watercolor',
       styleName: '水彩童话',
       createdAt: DateTime.utc(2026, 10, 2),
+      characters: characters,
       pages: [
         BookPageItem(pageIndex: 0, text: '第一页', imageBase64: pagePng(200, 60, 60)),
         BookPageItem(pageIndex: 1, text: '第二页', imageBase64: pagePng(60, 200, 60)),
@@ -100,6 +101,36 @@ void main() {
     final after = bytesOfPage(tester, '第一页');
     expect(identical(after, before), isFalse);
     expect(after, base64Decode(redrawn));
+    await closeReader(tester);
+  });
+
+  testWidgets('角色已有定妆照时点「重绘定妆照」先确认，取消则不开始生成', (tester) async {
+    final book = threePageBook(
+      characters: [
+        BookCharacter(
+          id: 'c1',
+          name: '豆豆',
+          appearance: '绿色毛绒恐龙',
+          defaultOutfit: '红色小围巾',
+          referenceImageBase64: pagePng(20, 160, 80),
+        ),
+      ],
+    );
+    await pumpReader(tester, book);
+
+    await tester.tap(find.byTooltip('查看角色定妆照与固定设定'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('重绘定妆照'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('重新生成定妆照？'), findsOneWidget);
+    expect(find.textContaining('「豆豆」已经有定妆照了'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    // 没有进入生成状态：角色卡片上没有转圈，按钮仍可点。
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.text('重绘定妆照'), findsOneWidget);
     await closeReader(tester);
   });
 

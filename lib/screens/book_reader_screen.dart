@@ -13,6 +13,7 @@ import '../services/book_engine_service.dart';
 import '../services/book_storage_service.dart';
 import '../services/settings_service.dart';
 import '../services/tts_service.dart';
+import 'confirm_dialog.dart';
 
 class BookReaderScreen extends StatefulWidget {
   final PictureBook book;
@@ -490,6 +491,15 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                       onPressed: updatingCharId != null
                                           ? null
                                           : () async {
+                                              // 已经有定妆照：再点很可能是误触，先确认再调用生图模型。
+                                              if (character.referenceImageBase64 != null) {
+                                                final again = await confirmRegenerate(
+                                                  ctx,
+                                                  title: '重新生成定妆照？',
+                                                  message: '「${character.name}」已经有定妆照了。重新生成会替换现在这张，并再调用一次生图模型。',
+                                                );
+                                                if (!again || !ctx.mounted) return;
+                                              }
                                               setDialogState(() => updatingCharId = character.id);
                                               try {
                                                 final settings = await _settingsService.loadSettings();

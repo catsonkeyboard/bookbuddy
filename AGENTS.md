@@ -154,6 +154,7 @@ lib/
     ├── character_library_screen.dart  # 角色库网格页
     ├── character_card_editor_screen.dart # 角色卡新建/编辑与定妆图生成页
     ├── story_composer_screen.dart     # 故事创作助手页 (生成/反馈重写/版本回退/草稿)
+    ├── confirm_dialog.dart            # 再次调用模型前的确认弹框 (重画定妆照/重新识别，防误触)
     ├── settings_screen.dart           # 模型接口、密钥及 TTS 伴读配置中心
     └── tale_recommendation_dialog.dart# 经典童话灵感弹窗
 ```

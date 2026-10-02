@@ -14,6 +14,7 @@ import '../services/character_storage_service.dart';
 import '../services/photo_picker_service.dart';
 import '../services/photo_preprocessor.dart';
 import '../services/settings_service.dart';
+import 'confirm_dialog.dart';
 import 'settings_screen.dart';
 
 /// 角色卡新建 / 编辑页。card 为空表示新建。
@@ -71,6 +72,9 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
 
   /// 本次会话换过照片后，画于换照片之前的定妆图画风；重新生成后移除。
   final Set<String> _staleAnchorStyles = {};
+
+  /// 本次会话里「让 AI 认识它」已经成功过一次；再点先确认。
+  bool _recognizedOnce = false;
 
   @override
   void initState() {
@@ -333,6 +337,16 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
   Future<void> _recognize() async {
     final photo = _photoBytes;
     if (_busy || photo == null) return;
+    // 已经识别过，或外貌已经填好：再点一次很可能是误触，先确认再调用模型。
+    if (_recognizedOnce || _appearanceCtrl.text.trim().isNotEmpty) {
+      final again = await confirmRegenerate(
+        context,
+        title: '重新识别这张照片？',
+        message: '这个角色已经有外貌设定了。重新识别会再调用一次模型，识别完可以选择只填空白项或全部覆盖。',
+        confirmLabel: '重新识别',
+      );
+      if (!again || !mounted || _busy) return;
+    }
     setState(() {
       _busy = true;
       _busyText = '正在认识它...';
@@ -361,6 +375,7 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
       if (mounted) setState(() => _busy = false);
     }
     if (draft == null || !mounted) return;
+    _recognizedOnce = true;
     await _applyDraft(draft);
   }
 
@@ -410,6 +425,19 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
   /// 校验并保存 → 读设置 → 通道前置检查 → 生成 → 落盘并写回卡片映射。
   Future<void> _generateAnchor() async {
     if (!await _save()) return;
+    if (!mounted) return;
+
+    // 保存时如果因为外貌改动清空了定妆图，这里就没有旧图了，不用再问。
+    if (_card.anchorImagePaths.containsKey(_styleId)) {
+      final styleName =
+          StyleCatalog.styles.firstWhere((s) => s.id == _styleId).name;
+      final again = await confirmRegenerate(
+        context,
+        title: '重新生成定妆图？',
+        message: '「$styleName」画风已经有定妆图了。重新生成会替换现在这张，并再调用一次生图模型。',
+      );
+      if (!again || !mounted) return;
+    }
 
     final AppSettings settings;
     try {
