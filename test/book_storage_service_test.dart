@@ -137,4 +137,115 @@ void main() {
       expect(await storage.loadCharacterCardUsage(), {'card_a': 1});
     });
   });
+
+  group('loadBookSummaries', () {
+    test('lists what the shelf shows, newest first', () async {
+      await storage.saveBook(
+        PictureBook(
+          id: 'older',
+          title: 'Older',
+          styleId: 'watercolor',
+          styleName: 'Watercolor',
+          createdAt: DateTime.utc(2026, 9, 1),
+          pages: [BookPageItem(pageIndex: 0, text: 'a', imageBase64: 'aW1n')],
+        ),
+      );
+      await storage.saveBook(
+        PictureBook(
+          id: 'newer',
+          title: 'Newer',
+          styleId: 'pixar',
+          styleName: 'Pixar',
+          createdAt: DateTime.utc(2026, 9, 2),
+          characterCardIds: ['card_a'],
+          pages: [
+            BookPageItem(pageIndex: 0, text: 'a', imageBase64: 'aW1n'),
+            BookPageItem(pageIndex: 1, text: 'b'),
+            BookPageItem(pageIndex: 2, text: 'c', needIllustration: false),
+          ],
+        ),
+      );
+
+      final summaries = await storage.loadBookSummaries();
+
+      expect(summaries.map((s) => s.id), ['newer', 'older']);
+      final newer = summaries.first;
+      expect(newer.title, 'Newer');
+      expect(newer.styleName, 'Pixar');
+      expect(newer.createdAt, DateTime.utc(2026, 9, 2));
+      expect(newer.pageCount, 3);
+      expect(newer.usesCharacterCards, isTrue);
+      expect(newer.completedIllustrationCount, 1);
+      expect(newer.targetIllustrationCount, 2);
+      expect(newer.hasUnfinishedIllustrations, isTrue);
+      final older = summaries.last;
+      expect(older.pageCount, 1);
+      expect(older.usesCharacterCards, isFalse);
+      expect(older.hasUnfinishedIllustrations, isFalse);
+    });
+
+    test('falls back to the backup and skips unreadable books', () async {
+      await storage.saveBook(_book('Original'));
+      await storage.saveBook(_book('Updated'));
+      await File('${dir.path}/book-1.json').writeAsString('{broken');
+      await File('${dir.path}/book-2.json').writeAsString('not json');
+      await File('${dir.path}/book-3.json').writeAsString(
+        jsonEncode(_book('Someone else').toJson()),
+      );
+
+      final summaries = await storage.loadBookSummaries();
+
+      expect(summaries.map((s) => s.title), ['Original']);
+    });
+
+    test('migrates legacy data before listing', () async {
+      SharedPreferences.setMockInitialValues({
+        'bookbuddy_saved_books': [jsonEncode(_book('Legacy').toJson())],
+      });
+
+      expect((await storage.loadBookSummaries()).single.title, 'Legacy');
+      expect(await File('${dir.path}/book-1.json').exists(), isTrue);
+    });
+  });
+
+  group('loadBook', () {
+    test('returns the whole book, illustrations included', () async {
+      await storage.saveBook(
+        PictureBook(
+          id: 'book-1',
+          title: 'Full',
+          styleId: 'watercolor',
+          styleName: 'Watercolor',
+          createdAt: DateTime.utc(2026, 9, 26),
+          protagonistRefImage: 'cmVm',
+          pages: [
+            BookPageItem(pageIndex: 0, text: 'a', imageBase64: 'aW1n'),
+            BookPageItem(pageIndex: 1, text: 'b'),
+          ],
+        ),
+      );
+
+      final book = await storage.loadBook('book-1');
+
+      expect(book!.title, 'Full');
+      expect(book.protagonistRefImage, 'cmVm');
+      expect(book.pages.map((p) => p.text), ['a', 'b']);
+      expect(book.pages.first.imageBase64, 'aW1n');
+    });
+
+    test('falls back to the backup when the main file is damaged', () async {
+      await storage.saveBook(_book('Original'));
+      await storage.saveBook(_book('Updated'));
+      await File('${dir.path}/book-1.json').writeAsString('{broken');
+
+      expect((await storage.loadBook('book-1'))!.title, 'Original');
+    });
+
+    test('returns null when no readable copy exists', () async {
+      await File('${dir.path}/book-2.json').writeAsString('not json');
+
+      expect(await storage.loadBook('missing'), isNull);
+      expect(await storage.loadBook('book-2'), isNull);
+    });
+  });
 }

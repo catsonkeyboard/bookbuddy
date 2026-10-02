@@ -51,6 +51,42 @@ Set<String>? _readCharacterCardIds(File file, String expectedId) {
   }
 }
 
+/// 在后台 isolate 里运行：逐本读出书架目录里的绘本，主文件读不出来就退回备份。
+///
+/// 惰性产出：调用方用完一本再取下一本，内存里同时只有一本书。
+Iterable<PictureBook> _readBooksIn(String dirPath) sync* {
+  for (final id in _bookIdsIn(Directory(dirPath).listSync())) {
+    final book = _readBookOrBackup((dirPath, id));
+    if (book != null) yield book;
+  }
+}
+
+/// 在后台 isolate 里运行。
+PictureBook? _readBookOrBackup((String, String) dirPathAndId) {
+  final (dirPath, id) = dirPathAndId;
+  return _readBookSync(File('$dirPath/$id.json'), id) ??
+      _readBookSync(File('$dirPath/$id.json.bak'), id);
+}
+
+PictureBook? _readBookSync(File file, String expectedId) {
+  try {
+    final book = PictureBook.fromJson(jsonDecode(file.readAsStringSync()));
+    return book.id == expectedId ? book : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 在后台 isolate 里运行。
+List<PictureBook> _readAllBooks(String dirPath) =>
+    _readBooksIn(dirPath).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+/// 在后台 isolate 里运行：每本书读完只留下摘要。
+List<BookSummary> _readBookSummaries(String dirPath) =>
+    _readBooksIn(dirPath).map(BookSummary.of).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
 class BookStorageService {
   static const _legacyBooksKey = 'bookbuddy_saved_books';
   static const _migratedKey = 'bookbuddy_books_migrated_to_files';
@@ -113,26 +149,37 @@ class BookStorageService {
     }
   }
 
-  /// Load the last known-good copy if a save was interrupted or corrupt.
-  Future<List<PictureBook>> loadBooks() async {
+  Future<Directory> _getMigratedBooksDirectory() async {
     try {
       await _migrateLegacyDataIfNeeded();
     } catch (_) {
       // Existing files are still readable; legacy preferences remain untouched.
     }
-    final dir = await _getBooksDirectory();
-    final ids = _bookIdsIn(await dir.list().toList());
+    return _getBooksDirectory();
+  }
 
-    final results = await Future.wait(
-      ids.map((id) async {
-        final file = File('${dir.path}/$id.json');
-        return await _readBook(file, id) ??
-            await _readBook(File('${file.path}.bak'), id);
-      }),
-    );
-    final books = results.whereType<PictureBook>().toList();
-    books.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    return books;
+  /// 书架列表用：每本绘本的摘要，按创建时间从新到旧。
+  ///
+  /// 一本书的 JSON 带着每页插画的 base64，十几 MB。读取和解析都放在后台 isolate 里
+  /// 逐本进行，只把摘要带回来；主文件损坏或缺失时用上一次保存的备份。
+  Future<List<BookSummary>> loadBookSummaries() async {
+    final dir = await _getMigratedBooksDirectory();
+    return compute(_readBookSummaries, dir.path);
+  }
+
+  /// 打开某一本时加载整本（含插画），同样在后台 isolate 里读取解析。
+  /// 主文件和备份都读不出来时返回 null。
+  Future<PictureBook?> loadBook(String id) async {
+    final dir = await _getBooksDirectory();
+    return compute(_readBookOrBackup, (dir.path, id));
+  }
+
+  /// Load the last known-good copy if a save was interrupted or corrupt.
+  ///
+  /// 所有绘本整本留在内存里，书越多越重；只展示列表请用 [loadBookSummaries]。
+  Future<List<PictureBook>> loadBooks() async {
+    final dir = await _getMigratedBooksDirectory();
+    return compute(_readAllBooks, dir.path);
   }
 
   /// 每张角色卡出演了几本绘本（同一本里重复的卡只算一次）。

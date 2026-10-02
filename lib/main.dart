@@ -49,16 +49,22 @@ class BookBuddyApp extends StatelessWidget {
 }
 
 class MainHomeScreen extends StatefulWidget {
-  const MainHomeScreen({super.key});
+  final BookStorageService? bookStorage;
+
+  const MainHomeScreen({super.key, this.bookStorage});
 
   @override
   State<MainHomeScreen> createState() => _MainHomeScreenState();
 }
 
 class _MainHomeScreenState extends State<MainHomeScreen> {
-  final BookStorageService _storage = BookStorageService();
-  List<PictureBook> _books = [];
+  late final BookStorageService _storage =
+      widget.bookStorage ?? BookStorageService();
+  List<BookSummary> _books = [];
   bool _loading = true;
+  bool _shelfLoadInFlight = false;
+  bool _shelfReloadRequested = false;
+  String? _openingBookId;
 
   String? _errorMessage;
 
@@ -81,27 +87,72 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     }
   }
 
+  /// 书架只加载摘要，读取和解析在后台 isolate 里进行。
+  ///
+  /// 加载期间又来了刷新请求（连续保存会连续通知）时不再并行开一个后台加载，
+  /// 而是等这一轮结束后补一轮，保证书架最后停在最新状态。
   Future<void> _loadBooks() async {
+    if (_shelfLoadInFlight) {
+      _shelfReloadRequested = true;
+      return;
+    }
+    _shelfLoadInFlight = true;
     try {
-      final list = await _storage.loadBooks();
-      if (mounted) {
-        setState(() {
-          _books = list;
-          _loading = false;
-          _errorMessage = null;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _errorMessage = '加载绘本数据失败: $e';
-        });
-      }
+      do {
+        _shelfReloadRequested = false;
+        try {
+          final list = await _storage.loadBookSummaries();
+          if (mounted) {
+            setState(() {
+              _books = list;
+              _loading = false;
+              _errorMessage = null;
+            });
+          }
+        } catch (e) {
+          if (mounted) {
+            setState(() {
+              _loading = false;
+              _errorMessage = '加载绘本数据失败: $e';
+            });
+          }
+        }
+      } while (_shelfReloadRequested && mounted);
+    } finally {
+      _shelfLoadInFlight = false;
     }
   }
 
-  Future<void> _confirmDeleteBook(PictureBook book) async {
+  /// 书架手里只有摘要，点开时才把整本（含插画）加载出来交给阅读器。
+  Future<void> _openBook(BookSummary summary) async {
+    if (_openingBookId != null) return;
+    setState(() => _openingBookId = summary.id);
+    PictureBook? book;
+    try {
+      book = await _storage.loadBook(summary.id);
+    } catch (_) {
+      // 按读不出来处理。
+    }
+    if (!mounted) return;
+    setState(() => _openingBookId = null);
+    if (book == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('打不开绘本《${summary.title}》：文件已损坏或被删除'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } else {
+      final opened = book;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => BookReaderScreen(book: opened)),
+      );
+    }
+    _loadBooks();
+  }
+
+  Future<void> _confirmDeleteBook(BookSummary book) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -421,7 +472,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                               overflow: TextOverflow.ellipsis,
                                             ),
                                           ),
-                                          if (b.characterCardIds.isNotEmpty) ...[
+                                          if (b.usesCharacterCards) ...[
                                             const SizedBox(width: 6),
                                             const Tooltip(
                                               message: '使用了角色卡',
@@ -449,7 +500,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                           ],
                                         ],
                                       ),
-                                      subtitle: Text('$dateStr · ${b.pages.length} 页 · 画风: ${b.styleName}'),
+                                      subtitle: Text('$dateStr · ${b.pageCount} 页 · 画风: ${b.styleName}'),
                                       trailing: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
@@ -460,16 +511,20 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                             hoverColor: Colors.red.withOpacity(0.1),
                                             onPressed: () => _confirmDeleteBook(b),
                                           ),
-                                          const Icon(Icons.chevron_right),
+                                          if (_openingBookId == b.id)
+                                            const SizedBox(
+                                              width: 24,
+                                              height: 24,
+                                              child: Padding(
+                                                padding: EdgeInsets.all(3),
+                                                child: CircularProgressIndicator(strokeWidth: 2),
+                                              ),
+                                            )
+                                          else
+                                            const Icon(Icons.chevron_right),
                                         ],
                                       ),
-                                      onTap: () async {
-                                        await Navigator.push(
-                                          context,
-                                          MaterialPageRoute(builder: (_) => BookReaderScreen(book: b)),
-                                        );
-                                        _loadBooks();
-                                      },
+                                      onTap: () => _openBook(b),
                                     ),
                                   );
                                 },
