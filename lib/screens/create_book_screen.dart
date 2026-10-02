@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/app_settings.dart';
+import '../models/book.dart';
 import '../models/character_card.dart';
 import '../models/fairy_tale_catalog.dart';
 import '../models/style_catalog.dart';
@@ -41,6 +43,7 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
   late String _selectedStyleId;
 
   bool _isProcessing = false;
+  bool _generatingAnchors = false;
   String _statusText = '';
 
   late final BookEngineService _engine;
@@ -124,15 +127,106 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
         for (final id in _selectedCardIds) _cards.firstWhere((c) => c.id == id),
       ];
 
-  /// 已选卡片里缺少当前画风定妆图的名字，用于提示「进入审核后会先补画」。
-  List<String> get _cardsMissingAnchor => [
+  /// 已选卡片里缺少当前画风定妆图的卡片：生成分镜前会询问是否现在绘制。
+  List<CharacterCard> get _cardsMissingAnchor => [
         for (final card in _selectedCards)
-          if (!card.anchorImagePaths.containsKey(_selectedStyleId)) card.name,
+          if (!card.anchorImagePaths.containsKey(_selectedStyleId)) card,
       ];
 
-  Future<List<PinnedCharacter>> _buildPinned() async {
+  /// 询问是否为缺少当前画风定妆照的卡片现在绘制。
+  /// 返回 'generate' / 'skip'；取消或关闭对话框返回 null。
+  Future<String?> _askGenerateMissingAnchors(
+    BookStyle style,
+    List<CharacterCard> missing,
+  ) {
+    final names = missing.map((c) => '「${c.name}」').join('、');
+    // 提示这些卡片已经有哪些画风，方便取消后改选现成的画风。
+    final existing = [
+      for (final card in missing)
+        if (card.anchorImagePaths.isNotEmpty)
+          '「${card.name}」已有的画风：${[
+            for (final s in StyleCatalog.styles)
+              if (card.anchorImagePaths.containsKey(s.id)) s.name,
+          ].join('、')}。',
+    ];
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('缺少「${style.name}」画风的定妆照'),
+        content: Text(
+          [
+            '$names还没有「${style.name}」画风的定妆照。要现在生成吗？'
+                '生成后会保存到角色卡，以后用这个画风建书可以直接使用。',
+            ...existing,
+            '选「暂不生成」会先生成分镜，定妆照留到审核页再画。',
+          ].join('\n\n'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'skip'),
+            child: const Text('暂不生成'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'generate'),
+            child: const Text('现在生成'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 逐张绘制 [cards] 在 [style] 画风下的定妆照并写回角色卡；卡片有照片时作为参考。
+  Future<void> _generateMissingAnchors(
+    AppSettings settings,
+    BookStyle style,
+    List<CharacterCard> cards,
+  ) async {
+    try {
+      await WakelockPlus.enable();
+    } catch (_) {
+      // 桌面 / 测试环境可能没有插件实现。
+    }
+    try {
+      for (var i = 0; i < cards.length; i++) {
+        final card = cards[i];
+        if (mounted) {
+          setState(() {
+            _statusText =
+                '正在绘制 ${card.name} 的${style.name}定妆照 (${i + 1}/${cards.length})...';
+          });
+        }
+        final photoPath = card.photoPath;
+        final photo = photoPath == null
+            ? null
+            : await _characterStorage.readImageBase64(photoPath);
+        final image = await _engine.generateCharacterReference(
+          settings: settings,
+          style: style,
+          character: card.toBookCharacter(),
+          photoReferenceBase64: (photo == null || photo.isEmpty) ? null : photo,
+        );
+        if (image == null || image.isEmpty) {
+          throw StateError('${card.name} 定妆照生成失败');
+        }
+        final path = await _characterStorage.saveAnchor(card.id, style.id, image);
+        // 直接更新手里的卡片对象：随后的固定角色要带上这张新定妆照。
+        card.anchorImagePaths[style.id] = path;
+        await FileImage(await _characterStorage.imageFile(path)).evict();
+      }
+    } finally {
+      try {
+        await WakelockPlus.disable();
+      } catch (_) {}
+    }
+  }
+
+  Future<List<PinnedCharacter>> _buildPinned(List<CharacterCard> cards) async {
     final pinned = <PinnedCharacter>[];
-    for (final card in _selectedCards) {
+    for (final card in cards) {
       final path = card.anchorImagePaths[_selectedStyleId];
       final anchor =
           path == null ? null : await _characterStorage.readImageBase64(path);
@@ -212,16 +306,61 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       return;
     }
 
+    final style = StyleCatalog.styles.firstWhere(
+      (s) => s.id == _selectedStyleId,
+    );
+    // 固定这一刻选中的卡片：后面补画定妆照会触发角色库刷新，不能再依赖 _cards。
+    final cards = _selectedCards;
+    final missing = [
+      for (final card in cards)
+        if (!card.anchorImagePaths.containsKey(style.id)) card,
+    ];
+    var generateAnchors = false;
+    // 通道用不上定妆照或还没配生图密钥时不问，沿用页面上已有的提示和审核页的检查。
+    if (missing.isNotEmpty &&
+        settings.imageApiKey.isNotEmpty &&
+        _engine.supportsCharacterReference(
+          type: settings.imageType,
+          baseUrl: settings.imageBaseUrl,
+          model: settings.imageModel,
+        )) {
+      final choice = await _askGenerateMissingAnchors(style, missing);
+      if (choice == null || !mounted) return;
+      generateAnchors = choice == 'generate';
+    }
+
     setState(() {
       _isProcessing = true;
+      _generatingAnchors = generateAnchors;
       _statusText = '正在分析故事并重构绘本分镜镜头...';
     });
 
     try {
+      if (generateAnchors) {
+        try {
+          await _generateMissingAnchors(settings, style, missing);
+        } catch (e) {
+          // 已经画好的定妆照留在角色卡里；停在创建页，可以重试或改选「暂不生成」。
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('定妆照生成失败：$e'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+          return;
+        }
+        if (!mounted) return;
+        setState(() {
+          _generatingAnchors = false;
+          _statusText = '正在分析故事并重构绘本分镜镜头...';
+        });
+      }
       final finalTitle = title.isNotEmpty
           ? title
           : (text.length > 20 ? text.substring(0, 20) : text);
-      final pinned = await _buildPinned();
+      final pinned = await _buildPinned(cards);
       final draft = await _engine.createStoryboardDraft(
         settings: settings,
         title: finalTitle,
@@ -232,10 +371,6 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       if (draft.pages.isEmpty) {
         throw Exception('大模型未能成功生成绘本分镜，请重试');
       }
-
-      final style = StyleCatalog.styles.firstWhere(
-        (s) => s.id == _selectedStyleId,
-      );
 
       if (!mounted) return;
       // 成功获得分镜后，进入分镜审核确认页面（支持编辑正文、画面动作、微表情和开关插画）
@@ -249,7 +384,7 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
             initialCharacters: draft.characters,
             settings: settings,
             pinnedCharacters: pinned,
-            characterCardIds: List.of(_selectedCardIds),
+            characterCardIds: [for (final card in cards) card.id],
           ),
         ),
       );
@@ -274,7 +409,12 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _isProcessing = false);
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _generatingAnchors = false;
+        });
+      }
     }
   }
 
@@ -354,7 +494,11 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final missingAnchor = _cardsMissingAnchor;
+    final missingAnchor = [for (final card in _cardsMissingAnchor) card.name];
+    final withAnchor = [
+      for (final card in _selectedCards)
+        if (card.anchorImagePaths.containsKey(_selectedStyleId)) card.name,
+    ];
     return Scaffold(
       appBar: AppBar(
         title: const Text('✨ 新建绘本作品'),
@@ -397,9 +541,11 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                       const SizedBox(height: 24),
                       Text(_statusText, style: const TextStyle(fontSize: 16)),
                       const SizedBox(height: 8),
-                      const Text(
-                        '正在智能分镜与镜头场景重构中，完成后将进入分镜审核确认页面',
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      Text(
+                        _generatingAnchors
+                            ? '定妆照会保存到角色卡，画完后继续生成分镜'
+                            : '正在智能分镜与镜头场景重构中，完成后将进入分镜审核确认页面',
+                        style: const TextStyle(fontSize: 12, color: Colors.grey),
                       ),
                     ],
                   ),
@@ -522,12 +668,18 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                         '当前生图通道不支持参考图，角色卡的定妆图不会被使用，每页外貌可能不一致。建议在设置里切换到 Gemini 图像模型或腾讯混元。',
                         style: TextStyle(fontSize: 12, color: Colors.orange),
                       ),
-                    ] else if (missingAnchor.isNotEmpty) ...[
+                    ] else if (_selectedCardIds.isNotEmpty) ...[
                       const SizedBox(height: 8),
-                      Text(
-                        '进入审核后会先为 ${missingAnchor.join('、')} 绘制该画风的定妆照',
-                        style: const TextStyle(fontSize: 12, color: Colors.grey),
-                      ),
+                      if (withAnchor.isNotEmpty)
+                        Text(
+                          '将直接使用 ${withAnchor.join('、')} 已有的该画风定妆照',
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      if (missingAnchor.isNotEmpty)
+                        Text(
+                          '${missingAnchor.join('、')} 还没有该画风的定妆照，生成分镜前会询问是否现在绘制',
+                          style: const TextStyle(fontSize: 12, color: Colors.orange),
+                        ),
                     ],
                     const SizedBox(height: 36),
                     ElevatedButton.icon(

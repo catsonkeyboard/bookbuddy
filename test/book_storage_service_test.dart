@@ -99,4 +99,42 @@ void main() {
     expect(BookStorageService.booksChangedNotifier.value, initialValue + 2);
     expect(await storage.loadBooks(), isEmpty);
   });
+
+  group('loadCharacterCardUsage', () {
+    PictureBook bookWithCards(String id, List<String> cardIds) => PictureBook(
+      id: id,
+      title: id,
+      styleId: 'watercolor',
+      styleName: 'Watercolor',
+      pages: [BookPageItem(pageIndex: 0, text: 'Once upon a time')],
+      createdAt: DateTime.utc(2026, 9, 26),
+      characterCardIds: cardIds,
+    );
+
+    test('counts each card once per book', () async {
+      await storage.saveBook(bookWithCards('book-1', ['card_a', 'card_b']));
+      await storage.saveBook(bookWithCards('book-2', ['card_a', 'card_a']));
+      await storage.saveBook(bookWithCards('book-3', []));
+
+      expect(await storage.loadCharacterCardUsage(), {'card_a': 2, 'card_b': 1});
+    });
+
+    test('is empty when there are no books', () async {
+      expect(await storage.loadCharacterCardUsage(), isEmpty);
+    });
+
+    test('falls back to the backup and skips unreadable books', () async {
+      await storage.saveBook(bookWithCards('book-1', ['card_a']));
+      await storage.saveBook(bookWithCards('book-1', ['card_b']));
+      // 主文件损坏：用备份（上一次保存的 card_a）。
+      await File('${dir.path}/book-1.json').writeAsString('{broken');
+      // 没有备份的损坏文件、id 对不上的文件都不计入。
+      await File('${dir.path}/book-2.json').writeAsString('not json');
+      await File('${dir.path}/book-3.json').writeAsString(
+        jsonEncode(bookWithCards('someone-else', ['card_c']).toJson()),
+      );
+
+      expect(await storage.loadCharacterCardUsage(), {'card_a': 1});
+    });
+  });
 }

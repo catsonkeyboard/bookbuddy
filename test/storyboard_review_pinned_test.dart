@@ -333,6 +333,56 @@ void main() {
     expect((book['characters'] as List).single['appearance'], '紫色毛绒恐龙');
   });
 
+  testWidgets('书内角色已有定妆照时重绘先确认，取消则不调用生图模型', (tester) async {
+    final oldReference = base64Encode([0x89, 0x50, 0x4e, 0x47, 1, 1, 1, 1]);
+    await tester.runAsync(() => charStorage.saveCard(dino()));
+    final sent = <dynamic>[];
+    // 书内改过外貌：定妆照只属于本书，走普通确认而不是「是否更新角色卡」。
+    final edited = dino().toBookCharacter()
+      ..appearance = '紫色毛绒恐龙'
+      ..referenceImageBase64 = oldReference;
+    await pumpReview(
+      tester,
+      settings: AppSettings(
+        imageType: 'gemini',
+        imageApiKey: 'test-key',
+        imageModel: 'gemini-2.5-flash-image',
+      ),
+      engine: BookEngineService(dio: fakeGeminiImageDio(pngBase64, sent)),
+      initialCharacters: [edited],
+      pinnedCharacters: [PinnedCharacter(card: dino())],
+    );
+
+    Future<void> openConfirm() async {
+      await tester.runAsync(() => tester.tap(find.byTooltip('重新生成定妆照')));
+      await tester.pumpAndSettle();
+      expect(find.text('重新生成定妆照？'), findsOneWidget);
+      expect(find.text('只用于本书'), findsNothing);
+    }
+
+    await openConfirm();
+    expect(find.textContaining('「豆豆」已经有定妆照了'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(sent, isEmpty);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+
+    await openConfirm();
+    await runIo(
+      tester,
+      () => tester.tap(find.text('重新生成')),
+      until: portraitSavedAndIdle,
+      maxRounds: 120,
+    );
+    expect(sent, hasLength(1));
+    final bookFile = bookDir
+        .listSync()
+        .whereType<File>()
+        .singleWhere((f) => f.path.endsWith('.json'));
+    final book = jsonDecode(bookFile.readAsStringSync()) as Map<String, dynamic>;
+    expect((book['characters'] as List).single['referenceImageBase64'], pngBase64);
+  });
+
   testWidgets('卡片角色补画定妆照时附带卡片照片', (tester) async {
     const photo = 'UEhPVE9fTUFSS0VS';
     final settings = AppSettings(

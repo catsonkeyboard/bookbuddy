@@ -50,13 +50,10 @@ class _CharacterLibraryScreenState extends State<CharacterLibraryScreen> {
         _loading = false;
         _errorMessage = null;
       });
-      final counts = <String, int>{};
+      var counts = <String, int>{};
       try {
-        for (final book in await _bookStorage.loadBooks()) {
-          for (final id in book.characterCardIds.toSet()) {
-            counts[id] = (counts[id] ?? 0) + 1;
-          }
-        }
+        // 绘本文件很大（每页插画都在里面），统计放在后台 isolate，不卡页面切换。
+        counts = await _bookStorage.loadCharacterCardUsage();
       } catch (_) {
         // 书架读不出来只影响「出演 N 本」，不影响角色库本身。
       }

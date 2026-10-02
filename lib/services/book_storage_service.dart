@@ -7,6 +7,50 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/book.dart';
 
+/// 书架目录里出现过的绘本 id：正式文件和备份文件都算。
+Set<String> _bookIdsIn(Iterable<FileSystemEntity> entities) {
+  final ids = <String>{};
+  for (final file in entities.whereType<File>()) {
+    final name = file.uri.pathSegments.last;
+    if (name.endsWith('.json')) {
+      ids.add(name.substring(0, name.length - '.json'.length));
+    } else if (name.endsWith('.json.bak')) {
+      ids.add(name.substring(0, name.length - '.json.bak'.length));
+    }
+  }
+  return ids;
+}
+
+/// 在后台 isolate 里运行：同步逐本读取，读完一本就丢弃，内存里同时只有一本书。
+Map<String, int> _countCharacterCardUsage(String dirPath) {
+  final dir = Directory(dirPath);
+  if (!dir.existsSync()) return {};
+  final counts = <String, int>{};
+  for (final id in _bookIdsIn(dir.listSync())) {
+    final cardIds =
+        _readCharacterCardIds(File('$dirPath/$id.json'), id) ??
+        _readCharacterCardIds(File('$dirPath/$id.json.bak'), id);
+    for (final cardId in cardIds ?? const <String>{}) {
+      counts[cardId] = (counts[cardId] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
+
+/// 读不出来、不是这本书的文件返回 null，由调用方退回备份。
+Set<String>? _readCharacterCardIds(File file, String expectedId) {
+  try {
+    final json = jsonDecode(file.readAsStringSync());
+    if (json is! Map || json['id'] != expectedId) return null;
+    return {
+      for (final id in json['characterCardIds'] as List? ?? const [])
+        id.toString(),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 class BookStorageService {
   static const _legacyBooksKey = 'bookbuddy_saved_books';
   static const _migratedKey = 'bookbuddy_books_migrated_to_files';
@@ -77,16 +121,7 @@ class BookStorageService {
       // Existing files are still readable; legacy preferences remain untouched.
     }
     final dir = await _getBooksDirectory();
-    final entities = await dir.list().toList();
-    final ids = <String>{};
-    for (final file in entities.whereType<File>()) {
-      final name = file.uri.pathSegments.last;
-      if (name.endsWith('.json')) {
-        ids.add(name.substring(0, name.length - '.json'.length));
-      } else if (name.endsWith('.json.bak')) {
-        ids.add(name.substring(0, name.length - '.json.bak'.length));
-      }
-    }
+    final ids = _bookIdsIn(await dir.list().toList());
 
     final results = await Future.wait(
       ids.map((id) async {
@@ -98,6 +133,16 @@ class BookStorageService {
     final books = results.whereType<PictureBook>().toList();
     books.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     return books;
+  }
+
+  /// 每张角色卡出演了几本绘本（同一本里重复的卡只算一次）。
+  ///
+  /// 只需要每本书的 characterCardIds，但书的 JSON 里带着每页插画的 base64，一本十几 MB。
+  /// 在主线程读取并解析全部绘本会让界面卡住，所以放到后台 isolate 里逐本处理，
+  /// 只把计数带回来。
+  Future<Map<String, int>> loadCharacterCardUsage() async {
+    final dir = await _getBooksDirectory();
+    return compute(_countCharacterCardUsage, dir.path);
   }
 
   /// Write a complete replacement, preserving the previous valid book.

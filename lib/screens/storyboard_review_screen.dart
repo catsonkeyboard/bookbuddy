@@ -11,6 +11,7 @@ import '../services/book_engine_service.dart';
 import '../services/book_storage_service.dart';
 import '../services/character_storage_service.dart';
 import 'book_reader_screen.dart';
+import 'confirm_dialog.dart';
 
 class StoryboardReviewScreen extends StatefulWidget {
   final String title;
@@ -286,7 +287,8 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
   }
 
   /// 单独重绘某个角色的定妆照。卡片角色的卡片里已有这个画风的定妆图时，
-  /// 先问是否同时更新角色卡，避免悄悄覆盖之后所有新绘本都会用到的形象。
+  /// 先问是否同时更新角色卡，避免悄悄覆盖之后所有新绘本都会用到的形象；
+  /// 其他已经有定妆照的角色先确认是否重新生成。还没有定妆照时直接生成。
   Future<void> _regenerateReference(BookCharacter character) async {
     var writeBackToCard = true;
     if (_isCardCharacter(character) &&
@@ -318,6 +320,14 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
       );
       if (!mounted || choice == null || choice == 'cancel') return;
       writeBackToCard = choice == 'card';
+    } else if (character.referenceImageBase64 != null) {
+      // 已经有定妆照的其他角色：再点一次很可能是误触，先确认再调用生图模型。
+      final again = await confirmRegenerate(
+        context,
+        title: '重新生成定妆照？',
+        message: '「${character.name}」已经有定妆照了。重新生成会替换现在这张，并再调用一次生图模型。',
+      );
+      if (!again || !mounted) return;
     }
     await _prepareCharacterReferences(
       only: character,

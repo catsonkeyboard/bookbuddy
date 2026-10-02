@@ -371,15 +371,102 @@ void main() {
     expect(saved['anchorImagePaths'], {'watercolor': 'card_toy/anchor_watercolor.png'});
     expect(saved['photoPath'], 'card_toy/photo.jpg');
 
+    // 已有定妆图时再点生成要先确认。
     await runIo(
       tester,
       () => tester.tap(find.text('重新生成水彩童话定妆图')),
+      until: () => find.text('重新生成定妆图？').evaluate().isNotEmpty,
+    );
+    await runIo(
+      tester,
+      () => tester.tap(find.text('重新生成')),
       until: () =>
           find.text('定妆图已保存，请检查外貌是否符合预期').evaluate().isNotEmpty &&
           find.byType(CircularProgressIndicator).evaluate().isEmpty,
       maxRounds: 120,
     );
     expect(find.text(staleHint), findsNothing);
+  });
+
+  testWidgets('已有定妆图时再点生成先确认，取消则不调用生图模型', (tester) async {
+    final oldAnchor = [0x89, 0x50, 0x4e, 0x47, 1, 1, 1, 1];
+    late CharacterCard card;
+    await tester.runAsync(() async {
+      card = CharacterCard(id: 'card_toy', name: '豆豆', appearance: '绿色');
+      await storage.saveCard(card);
+      card.anchorImagePaths['watercolor'] = await storage.saveAnchor(
+        'card_toy',
+        'watercolor',
+        base64Encode(oldAnchor),
+      );
+    });
+    final sent = <dynamic>[];
+    await pumpEditor(
+      tester,
+      card: card,
+      picker: FakePhotoPicker(),
+      engine: BookEngineService(dio: recordingDio(sent, () => {})),
+    );
+
+    await runIo(
+      tester,
+      () => tester.tap(find.text('重新生成水彩童话定妆图')),
+      until: () => find.text('重新生成定妆图？').evaluate().isNotEmpty,
+    );
+    expect(find.textContaining('「水彩童话」画风已经有定妆图了'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    await runIo(tester, () async {}, maxRounds: 5);
+
+    expect(sent, isEmpty);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(
+      File('${dir.path}/card_toy/anchor_watercolor.png').readAsBytesSync(),
+      oldAnchor,
+    );
+  });
+
+  testWidgets('识别过一次后再点「让 AI 认识它」先确认，取消则不再调用模型', (tester) async {
+    final sent = <dynamic>[];
+    await pumpEditor(
+      tester,
+      picker: FakePhotoPicker(photo: toyPhoto()),
+      engine: BookEngineService(dio: recordingDio(sent, () => draftReply)),
+    );
+    await pickFromGallery(tester);
+    // 第一次：表单是空的，不用确认。
+    await runIo(
+      tester,
+      () => tester.tap(find.text('让 AI 认识它')),
+      until: () => find.text('已填入识别结果，请检查后保存').evaluate().isNotEmpty,
+    );
+    expect(sent, hasLength(1));
+
+    await runIo(
+      tester,
+      () => tester.tap(find.text('让 AI 认识它')),
+      until: () => find.text('重新识别这张照片？').evaluate().isNotEmpty,
+    );
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    await runIo(tester, () async {}, maxRounds: 5);
+    expect(sent, hasLength(1));
+
+    // 确认后才会再调用一次，随后照常询问怎么填表。
+    await runIo(
+      tester,
+      () => tester.tap(find.text('让 AI 认识它')),
+      until: () => find.text('重新识别这张照片？').evaluate().isNotEmpty,
+    );
+    await runIo(
+      tester,
+      () => tester.tap(find.text('重新识别')),
+      until: () => find.text('用识别结果填写表单？').evaluate().isNotEmpty,
+    );
+    expect(sent, hasLength(2));
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    await leaveEditor(tester);
   });
 
   testWidgets('生图通道不支持参考图时，前置对话框说明照片不会被参考', (tester) async {
