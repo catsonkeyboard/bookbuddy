@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -42,6 +43,21 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   bool _autoPlayNext = false; // 是否朗读完自动翻下一页
 
   bool get _isPlaying => _playerState == PlayerState.playing;
+
+  /// 每页插画解码后的字节，连同它对应的 base64 原文。
+  ///
+  /// Image.memory 靠字节对象是不是同一个来判断是不是同一张图。朗读状态变化、翻页都会
+  /// 触发整页重建，如果每次重建都重新 base64Decode，图片会被当成新图重新加载，中间空白
+  /// 一帧，看起来就是闪屏。同一份 base64 只解码一次；重绘换了新图后原文不同，自然重新解码。
+  final Map<int, (String, Uint8List)> _pageImageBytes = {};
+
+  Uint8List _imageBytesFor(int pageIndex, String base64) {
+    final cached = _pageImageBytes[pageIndex];
+    if (cached != null && identical(cached.$1, base64)) return cached.$2;
+    final bytes = base64Decode(base64);
+    _pageImageBytes[pageIndex] = (base64, bytes);
+    return bytes;
+  }
 
   @override
   void initState() {
@@ -1193,6 +1209,8 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
           PageView.builder(
             controller: _pageController,
             itemCount: total,
+            // 提前构建相邻页，下一页的插画在翻过去之前就解码好，翻页时不会先空白再弹出。
+            allowImplicitScrolling: true,
             onPageChanged: (i) async {
               await _audioPlayer.stop();
               setState(() => _currentPage = i);
@@ -1227,8 +1245,10 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                               borderRadius: BorderRadius.circular(12),
                               child: page.imageBase64 != null
                                   ? Image.memory(
-                                      base64Decode(page.imageBase64!),
+                                      _imageBytesFor(index, page.imageBase64!),
                                       fit: BoxFit.cover,
+                                      // 重绘换图时保留旧图直到新图解码完成。
+                                      gaplessPlayback: true,
                                     )
                                   : Container(
                                       color: Colors.black26,
