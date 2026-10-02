@@ -204,6 +204,29 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     }
   }
 
+  /// 「重新合成本页语音」按钮：本页已经有语音时先确认，防止误触后覆盖并再调用一次语音模型。
+  /// 还没有语音时等同于第一次合成，不用问。
+  Future<void> _regenerateCurrentPageAudio() async {
+    final pageIndex = _currentPage;
+    final cachedPath = await _ttsService.getCachedAudioPath(
+      bookId: _book.id,
+      pageIndex: pageIndex,
+      knownPath: _book.pages[pageIndex].audioPath,
+    );
+    if (!mounted) return;
+    if (cachedPath != null) {
+      final again = await confirmRegenerate(
+        context,
+        title: '重新合成本页语音？',
+        message: '第 ${pageIndex + 1} 页已经有朗读语音了。重新合成会覆盖现在这段，并再调用一次语音模型。',
+        confirmLabel: '重新合成',
+      );
+      // 连读可能在确认期间翻了页；确认的是原来那一页，页码变了就不再合成。
+      if (!again || !mounted || _currentPage != pageIndex) return;
+    }
+    await _togglePlayCurrentPage(forceRegen: true);
+  }
+
   void _openRegenDialog() {
     final curItem = _book.pages[_currentPage];
     final style = StyleCatalog.styles.firstWhere(
@@ -1098,7 +1121,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             icon: const Icon(Icons.record_voice_over_outlined),
             onPressed: (_isAudioSynthesizing || _isRegenerating)
                 ? null
-                : () => _togglePlayCurrentPage(forceRegen: true),
+                : _regenerateCurrentPageAudio,
           ),
 
           // 3. 核心朗读播放 / 暂停按钮

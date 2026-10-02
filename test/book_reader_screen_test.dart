@@ -1,11 +1,16 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:bookbuddy/models/book.dart';
 import 'package:bookbuddy/screens/book_reader_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/run_io.dart';
 
 String pagePng(int r, int g, int b) {
   final src = img.Image(width: 8, height: 8);
@@ -132,6 +137,69 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(find.text('重绘定妆照'), findsOneWidget);
     await closeReader(tester);
+  });
+
+  group('本页已有朗读语音', () {
+    const regenTooltip = '重新使用 MiniMax 合成本页语音并覆盖';
+    // 确认后会继续走到「检查语音配置」这一步；测试里没配密钥，所以出现这条提示就说明继续了。
+    const missingKeyHint = '⚠️ 请先前往【设置 -> 绘本语音朗读】配置 MiniMax API Key 与 Group ID';
+    final audioBytes = [1, 2, 3, 4];
+    late Directory audioDir;
+    late File audio;
+
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+      FlutterSecureStorage.setMockInitialValues({});
+      audioDir = Directory.systemTemp.createTempSync('bookbuddy-reader-audio-');
+      audio = File('${audioDir.path}/audio_p0.mp3')..writeAsBytesSync(audioBytes);
+    });
+
+    tearDown(() {
+      if (audioDir.existsSync()) audioDir.deleteSync(recursive: true);
+    });
+
+    Future<void> pumpWithAudio(WidgetTester tester) async {
+      final book = threePageBook();
+      book.pages[0].audioPath = audio.path;
+      await pumpReader(tester, book);
+    }
+
+    /// 是否已有语音要查磁盘，所以点击和后续都在真实事件循环里推进。
+    Future<void> tapRegenAndWaitForConfirm(WidgetTester tester) => runIo(
+          tester,
+          () => tester.tap(find.byTooltip(regenTooltip)),
+          until: () => find.text('重新合成本页语音？').evaluate().isNotEmpty,
+        );
+
+    testWidgets('点重新合成先确认，取消则不继续', (tester) async {
+      await pumpWithAudio(tester);
+
+      await tapRegenAndWaitForConfirm(tester);
+      expect(find.textContaining('第 1 页已经有朗读语音了'), findsOneWidget);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      await runIo(tester, () async {}, maxRounds: 5);
+
+      expect(find.text(missingKeyHint), findsNothing);
+      expect(find.textContaining('正在使用 MiniMax'), findsNothing);
+      expect(audio.readAsBytesSync(), audioBytes);
+      await closeReader(tester);
+    });
+
+    testWidgets('确认后才继续重新合成', (tester) async {
+      await pumpWithAudio(tester);
+
+      await tapRegenAndWaitForConfirm(tester);
+      expect(find.text(missingKeyHint), findsNothing);
+      await runIo(
+        tester,
+        () => tester.tap(find.text('重新合成')),
+        until: () => find.text(missingKeyHint).evaluate().isNotEmpty,
+      );
+
+      expect(find.text(missingKeyHint), findsOneWidget);
+      await closeReader(tester);
+    });
   });
 
   testWidgets('下一页的插画在翻页前就已经准备好', (tester) async {
