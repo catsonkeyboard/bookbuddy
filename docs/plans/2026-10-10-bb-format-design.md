@@ -63,18 +63,17 @@ AppBar 加「导入」图标 → 系统打开文件对话框选 `.bb` → 校验
 
 ## 平台兼容
 
-| 平台 | 对话框 | 处理 |
-|---|---|---|
-| macOS | NSSavePanel / NSOpenPanel | entitlements 从 `user-selected.read-only` 升级为 `read-write` |
-| Android | SAF | `file_selector` 已封装，无需存储权限 |
-| Windows | 原生对话框 | 开箱即用 |
-| iOS | UIDocumentPicker | 开箱即用 |
-| Web | 不支持 dart:io | `kIsWeb` 下隐藏导入导出入口 |
+| 平台 | 导出 | 导入 | 处理 |
+|---|---|---|---|
+| macOS / Windows / Linux | 系统保存对话框（`getSaveLocation`） | 系统打开对话框 | macOS entitlements 升级 `user-selected.read-write`；`.bb` 扩展名过滤可用 |
+| Android / iOS | 分享面板（`share_plus`，`XFile` 携 `.bb` 文件名）：存到文件/发微信/AirDrop 等 | 系统打开对话框（SAF / UIDocumentPicker） | `file_selector` 的 `getSaveLocation` 在移动端未实现（默认抛 UnimplementedError），故导出走分享 |
+| Web | 不支持 | 不支持 | `kIsWeb` 下隐藏入口 |
 
 ## 依赖新增
 
 - `archive`（ZIP 读写）
-- `file_selector`（flutter.dev 官方文件保存/打开对话框）
+- `file_selector`（flutter.dev 官方文件保存/打开对话框；移动端仅用其 openFile）
+- `share_plus`（移动端导出分享）
 
 ## 测试策略
 
