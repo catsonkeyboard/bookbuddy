@@ -1,5 +1,11 @@
+import 'dart:io';
+
+import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'models/book.dart';
 import 'models/fairy_tale_catalog.dart';
 import 'screens/book_reader_screen.dart';
@@ -8,6 +14,7 @@ import 'screens/character_library_screen.dart';
 import 'screens/create_book_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/tale_recommendation_dialog.dart';
+import 'services/book_exchange_service.dart';
 import 'services/book_storage_service.dart';
 
 void main() {
@@ -60,6 +67,7 @@ class MainHomeScreen extends StatefulWidget {
 class _MainHomeScreenState extends State<MainHomeScreen> {
   late final BookStorageService _storage =
       widget.bookStorage ?? BookStorageService();
+  late final BookExchangeService _exchange = BookExchangeService();
   List<BookSummary> _books = [];
   bool _loading = true;
   bool _shelfLoadInFlight = false;
@@ -67,6 +75,10 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
   String? _openingBookId;
 
   String? _errorMessage;
+
+  /// 正在导出/导入的书 id / 文件名，用于禁用对应入口防手抖并发。
+  String? _exportingBookId;
+  bool _importing = false;
 
   @override
   void initState() {
@@ -202,12 +214,165 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
     }
   }
 
+  /// 导出一本书为 .bb：桌面端弹保存对话框，移动端走系统分享面板。
+  ///
+  /// 书架手里只有摘要，导出前先把整本（含插画）加载出来；同一时间只允许
+  /// 一个导出任务，防手抖连续点击。
+  Future<void> _exportBook(BookSummary summary) async {
+    if (_exportingBookId != null) return;
+    setState(() => _exportingBookId = summary.id);
+    try {
+      PictureBook? book;
+      try {
+        book = await _storage.loadBook(summary.id);
+      } catch (_) {}
+      if (book == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('打不开绘本《${summary.title}》：文件已损坏或被删除'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      final safeTitle = _safeFileName(summary.title);
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        await _exportViaShareSheet(book, safeTitle);
+        return;
+      }
+      await _exportViaSaveDialog(book, safeTitle);
+    } finally {
+      if (mounted) setState(() => _exportingBookId = null);
+    }
+  }
+
+  Future<void> _exportViaSaveDialog(PictureBook book, String safeTitle) async {
+    final location = await getSaveLocation(
+      suggestedName: '$safeTitle.bb',
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'BookBuddy 绘本', extensions: ['bb']),
+      ],
+    );
+    if (location == null) return; // 用户取消
+    var outputPath = location.path;
+    if (!outputPath.toLowerCase().endsWith('.bb')) {
+      outputPath = '$outputPath.bb'; // 某些平台对话框不给自动补后缀
+    }
+
+    try {
+      final bytes = await _exchange.exportBookToFile(book, outputPath);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '已导出《${book.title}』（${(bytes / 1024 / 1024).toStringAsFixed(1)} MB）',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('导出失败: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  Future<void> _exportViaShareSheet(PictureBook book, String safeTitle) async {
+    final tmpDir = await getTemporaryDirectory();
+    final tmpPath = '${tmpDir.path}/${book.id}_export.bb';
+    try {
+      await _exchange.exportBookToFile(book, tmpPath);
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(tmpPath)],
+          fileNameOverrides: ['$safeTitle.bb'],
+        ),
+      );
+      if (mounted && result.status == ShareResultStatus.success) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已导出《${book.title}』')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('导出失败: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      try {
+        final f = File(tmpPath);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
+  }
+
+  /// 导入一本 .bb：系统打开对话框选文件，校验通过后落盘并刷新书架。
+  Future<void> _importBook() async {
+    if (_importing) return;
+    setState(() => _importing = true);
+    try {
+      final file = await openFile(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'BookBuddy 绘本', extensions: ['bb']),
+        ],
+      );
+      if (file == null) return; // 用户取消
+
+      try {
+        final result = await _exchange.importBookFromFile(file.path);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                result.isDuplicateCopy
+                    ? '已导入副本《${result.book.title}』'
+                    : '已导入《${result.book.title}』',
+              ),
+            ),
+          );
+        }
+      } on BookExchangeException catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.message), backgroundColor: Colors.red),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('导入失败: $e'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  /// 文件名去掉各平台文件系统的非法字符。
+  String _safeFileName(String title) {
+    final cleaned = title.replaceAll(RegExp(r'[\\/:*?\"<>|]'), '_').trim();
+    return cleaned.isEmpty ? '绘本' : cleaned;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('📖 BookBuddy 绘本工坊'),
         actions: [
+          if (!kIsWeb)
+            IconButton(
+              tooltip: '导入绘本 (.bb)',
+              icon: const Icon(Icons.file_download_outlined),
+              onPressed: _importing ? null : _importBook,
+            ),
           IconButton(
             tooltip: '我的角色',
             icon: const Icon(Icons.face_retouching_natural),
@@ -504,11 +669,42 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
                                       trailing: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
+                                          if (!kIsWeb) ...[
+                                            if (_exportingBookId == b.id)
+                                              const SizedBox(
+                                                width: 20,
+                                                height: 20,
+                                                child: Padding(
+                                                  padding: EdgeInsets.all(3),
+                                                  child: CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                  ),
+                                                ),
+                                              )
+                                            else
+                                              IconButton(
+                                                tooltip: '导出绘本 (.bb)',
+                                                icon: const Icon(
+                                                  Icons.ios_share_outlined,
+                                                  size: 20,
+                                                ),
+                                                color: Colors.grey,
+                                                onPressed:
+                                                    _exportingBookId != null
+                                                        ? null
+                                                        : () =>
+                                                            _exportBook(b),
+                                              ),
+                                          ],
                                           IconButton(
                                             tooltip: '删除绘本',
-                                            icon: const Icon(Icons.delete_outline, size: 20),
+                                            icon: const Icon(
+                                              Icons.delete_outline,
+                                              size: 20,
+                                            ),
                                             color: Colors.grey,
-                                            hoverColor: Colors.red.withOpacity(0.1),
+                                            hoverColor: Colors.red
+                                                .withOpacity(0.1),
                                             onPressed: () => _confirmDeleteBook(b),
                                           ),
                                           if (_openingBookId == b.id)
