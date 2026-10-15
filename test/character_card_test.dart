@@ -47,7 +47,8 @@ void main() {
       'kind': 'alien',
       'source': 'dream',
     });
-    expect(card.kind, CharacterKind.human);
+    // 未知 kind 回落值与构造函数默认值一致，统一为 animal
+    expect(card.kind, CharacterKind.animal);
     expect(card.source, CharacterCardSource.manual);
     expect(card.species, '');
     expect(card.defaultOutfit, '');
@@ -57,6 +58,48 @@ void main() {
     expect(card.photoPath, isNull);
     expect(card.lastUsedAt, isNull);
     expect(card.createdAt, isA<DateTime>());
+  });
+
+  test('kind 缺省时构造与反序列化回落一致（animal）', () {
+    final card = CharacterCard(
+      id: 'card_default_kind',
+      name: '团子',
+      appearance: '白色小圆猫',
+    );
+    expect(card.kind, CharacterKind.animal);
+
+    // JSON 缺 kind 键或值为 null 时，fromJson 回落值应与构造默认一致
+    final noKey = CharacterCard.fromJson({
+      'id': 'card_default_kind',
+      'name': '团子',
+      'appearance': '白色小圆猫',
+    });
+    expect(noKey.kind, CharacterKind.animal);
+
+    // 序列化往返保持一致
+    final roundTrip = CharacterCard.fromJson(card.toJson());
+    expect(roundTrip.kind, card.kind);
+  });
+
+  test('anchorImagePaths 中 null 与空字符串值被过滤，不产生脏路径', () {
+    final card = CharacterCard.fromJson({
+      'id': 'card_paths',
+      'name': '豆豆',
+      'appearance': '绿色毛绒恐龙',
+      'anchorImagePaths': {
+        'watercolor': 'card_paths/anchor_watercolor.png',
+        'claymation': null,
+        'anime': '',
+      },
+    });
+    expect(card.anchorImagePaths, hasLength(1));
+    expect(
+      card.anchorImagePaths['watercolor'],
+      'card_paths/anchor_watercolor.png',
+    );
+    expect(card.anchorImagePaths.containsKey('claymation'), isFalse);
+    expect(card.anchorImagePaths.containsKey('anime'), isFalse);
+    expect(card.anchorImagePaths.values.contains('null'), isFalse);
   });
 
   test('toBookCharacter 保留 id 并映射 isAnimal', () {

@@ -50,7 +50,7 @@ class FairyTaleCatalog {
       title: '睡美人',
       category: '格林童话',
       synopsis: '中了沉睡诅咒的公主在被荆棘包围的古堡中，等待被真爱唤醒。',
-      recommendedStyle: 'oil',
+      recommendedStyle: 'vintage-storybook',
       emoji: '🌹',
     ),
     FairyTaleItem(
@@ -64,7 +64,7 @@ class FairyTaleCatalog {
       title: '不来梅的音乐家',
       category: '格林童话',
       synopsis: '驴、狗、猫和公鸡四个年迈动物伙伴齐心协力赶跑强盗。',
-      recommendedStyle: 'woodcut',
+      recommendedStyle: 'vintage-storybook',
       emoji: '🎵',
     ),
     FairyTaleItem(
@@ -129,7 +129,7 @@ class FairyTaleCatalog {
       title: '卖火柴的小女孩',
       category: '安徒生童话',
       synopsis: '寒冷除夕夜的微弱火光中，闪烁着温暖、爱与慈祥祖母的笑脸。',
-      recommendedStyle: 'oil',
+      recommendedStyle: 'watercolor',
       emoji: '🕯️',
     ),
     FairyTaleItem(
@@ -215,7 +215,7 @@ class FairyTaleCatalog {
       title: '美女与野兽',
       category: '世界经典',
       synopsis: '外表凶恶城堡主人的内心救赎，看透外表的真爱打破魔咒。',
-      recommendedStyle: 'oil',
+      recommendedStyle: 'vintage-storybook',
       emoji: '🥀',
     ),
     FairyTaleItem(

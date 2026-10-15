@@ -285,6 +285,8 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
   }
 
   Future<void> _startGenerate() async {
+    // 防重入：生成中再点一次（双击）会并发触发两次大模型调用，重复扣费。
+    if (_isProcessing) return;
     final title = _titleCtrl.text.trim();
     final text = _textCtrl.text.trim();
 
@@ -294,9 +296,16 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       return;
     }
 
+    // 在第一个 await 前就置忙并刷新界面，防止 await 间隙内的二次点击穿透。
+    setState(() {
+      _isProcessing = true;
+      _statusText = '正在分析故事并重构绘本分镜镜头...';
+    });
+
     final settings = await _loadSettings();
     if (!mounted) return;
     if (settings.llmApiKey.isEmpty) {
+      setState(() => _isProcessing = false);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('⚠️ 请先点击右上角设置图标，填写 LLM API Key！'),
@@ -306,8 +315,10 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
       return;
     }
 
+    // 画风 id 可能来自童话推荐的悬空 id，匹配不到时回退到第一个画风。
     final style = StyleCatalog.styles.firstWhere(
       (s) => s.id == _selectedStyleId,
+      orElse: () => StyleCatalog.styles.first,
     );
     // 固定这一刻选中的卡片：后面补画定妆照会触发角色库刷新，不能再依赖 _cards。
     final cards = _selectedCards;
@@ -325,12 +336,16 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
           model: settings.imageModel,
         )) {
       final choice = await _askGenerateMissingAnchors(style, missing);
-      if (choice == null || !mounted) return;
+      if (choice == null || !mounted) {
+        // 用户取消定妆照询问：复位忙碌状态，留在创建页。
+        if (mounted) setState(() => _isProcessing = false);
+        return;
+      }
       generateAnchors = choice == 'generate';
     }
 
+    // _isProcessing 已在进入时置位，这里只补状态文案与定妆照标记。
     setState(() {
-      _isProcessing = true;
       _generatingAnchors = generateAnchors;
       _statusText = '正在分析故事并重构绘本分镜镜头...';
     });
@@ -604,6 +619,7 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                                 final data = await Clipboard.getData(
                                   Clipboard.kTextPlain,
                                 );
+                                if (!mounted) return; // 剪贴板读取是异步的，页面可能已退出
                                 if (data != null &&
                                     data.text != null &&
                                     data.text!.isNotEmpty) {
@@ -689,8 +705,8 @@ class _CreateBookScreenState extends State<CreateBookScreen> {
                           borderRadius: BorderRadius.circular(10),
                         ),
                       ),
-                      onPressed: _startGenerate,
-                      icon: const Icon(Icons.auto_awesome),
+                      // 生成中禁用按钮，双击防重复扣费（与 _startGenerate 内部防重入双保险）。
+                      onPressed: _isProcessing ? null : _startGenerate,
                       label: const Text(
                         '🎬 分析故事并生成分镜 (进入审核)',
                         style: TextStyle(

@@ -39,11 +39,14 @@ class PictureBook {
     styleId: json['styleId'] ?? 'watercolor',
     styleName: json['styleName'] ?? '水彩童话',
     pages: (json['pages'] as List<dynamic>? ?? [])
-        .map((p) => BookPageItem.fromJson(p))
+        .whereType<Map>()
+        .map((p) => BookPageItem.fromJson(Map<String, dynamic>.from(p)))
         .toList(),
     createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
+    // jsonDecode 出的元素是 _Map<dynamic,dynamic>，直接强转会抛 TypeError，先统一转成 Map<String, dynamic>
     characters: (json['characters'] as List<dynamic>? ?? [])
-        .map((c) => BookCharacter.fromJson(c as Map<String, dynamic>))
+        .whereType<Map>()
+        .map((c) => BookCharacter.fromJson(Map<String, dynamic>.from(c)))
         .toList(),
     protagonistRefImage: json['protagonistRefImage'],
     characterCardIds: (json['characterCardIds'] as List<dynamic>? ?? [])
@@ -214,29 +217,30 @@ class BookPageItem {
   };
 
   factory BookPageItem.fromJson(Map<String, dynamic> json) => BookPageItem(
-    pageIndex: json['pageIndex'] ?? 0,
-    text: json['text'] ?? '',
-    sceneAction: json['sceneAction'] ?? '',
-    sceneEmotion: json['sceneEmotion'] ?? '',
-    sceneComposition: json['sceneComposition'] ?? '',
+    pageIndex: (json['pageIndex'] as num?)?.toInt() ?? 0,
+    text: json['text']?.toString() ?? '',
+    sceneAction: json['sceneAction']?.toString() ?? '',
+    sceneEmotion: json['sceneEmotion']?.toString() ?? '',
+    sceneComposition: json['sceneComposition']?.toString() ?? '',
     characterIds: (json['characterIds'] as List<dynamic>? ?? [])
         .map((id) => id.toString())
         .toList(),
     outfitOverrides: (json['outfitOverrides'] as Map? ?? {}).map(
       (key, value) => MapEntry(key.toString(), value.toString()),
     ),
-    rawPrompt: json['rawPrompt'],
-    imageBase64: json['imageBase64'],
-    imagePath: json['imagePath'],
-    isPlaceholder: json['isPlaceholder'] ?? false,
-    customInstruction: json['customInstruction'],
-    needIllustration: json['needIllustration'] ?? true,
-    generationError: json['generationError'],
-    imageModelUsed: json['imageModelUsed'],
-    imageProviderUsed: json['imageProviderUsed'],
-    imageReferenceApplied: json['imageReferenceApplied'] ?? false,
-    audioPath: json['audioPath'],
-    audioError: json['audioError'],
+    rawPrompt: json['rawPrompt']?.toString(),
+    imageBase64: json['imageBase64']?.toString(),
+    imagePath: json['imagePath']?.toString(),
+    isPlaceholder: json['isPlaceholder'] == true,
+    customInstruction: json['customInstruction']?.toString(),
+    // 缺键视为需要插画，仅显式 false 才关闭
+    needIllustration: json['needIllustration'] != false,
+    generationError: json['generationError']?.toString(),
+    imageModelUsed: json['imageModelUsed']?.toString(),
+    imageProviderUsed: json['imageProviderUsed']?.toString(),
+    imageReferenceApplied: json['imageReferenceApplied'] == true,
+    audioPath: json['audioPath']?.toString(),
+    audioError: json['audioError']?.toString(),
   );
 }
 

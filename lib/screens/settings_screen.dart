@@ -19,15 +19,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _loading = true;
 
   // 备用生图 Controllers
-  late TextEditingController _fbImgUrlCtrl;
-  late TextEditingController _fbImgKeyCtrl;
-  late TextEditingController _fbImgModelCtrl;
+  // 注意：用 initState 同步创建的空控制器，而非 late + 异步赋值——
+  // late 字段在 _load() 返回前用户秒退页面时，dispose() 会抛 LateInitializationError。
+  final TextEditingController _fbImgUrlCtrl = TextEditingController();
+  final TextEditingController _fbImgKeyCtrl = TextEditingController();
+  final TextEditingController _fbImgModelCtrl = TextEditingController();
 
   // MiniMax TTS Controllers
-  late TextEditingController _minimaxKeyCtrl;
-  late TextEditingController _minimaxGroupIdCtrl;
-  late TextEditingController _minimaxModelCtrl;
-  late TextEditingController _minimaxVoiceCtrl;
+  final TextEditingController _minimaxKeyCtrl = TextEditingController();
+  final TextEditingController _minimaxGroupIdCtrl = TextEditingController();
+  final TextEditingController _minimaxModelCtrl = TextEditingController();
+  final TextEditingController _minimaxVoiceCtrl = TextEditingController();
   double _ttsSpeed = 0.85;
 
   bool _obscureFbImgKey = true;
@@ -41,15 +43,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _load() async {
     _settings = await _service.loadSettings();
+    // 异步加载期间页面可能已被退出，继续访问 State 会崩溃。
+    if (!mounted) return;
 
-    _fbImgUrlCtrl = TextEditingController(text: _settings.fallbackImageBaseUrl);
-    _fbImgKeyCtrl = TextEditingController(text: _settings.fallbackImageApiKey);
-    _fbImgModelCtrl = TextEditingController(text: _settings.fallbackImageModel);
+    _fbImgUrlCtrl.text = _settings.fallbackImageBaseUrl;
+    _fbImgKeyCtrl.text = _settings.fallbackImageApiKey;
+    _fbImgModelCtrl.text = _settings.fallbackImageModel;
 
-    _minimaxKeyCtrl = TextEditingController(text: _settings.minimaxApiKey);
-    _minimaxGroupIdCtrl = TextEditingController(text: _settings.minimaxGroupId);
-    _minimaxModelCtrl = TextEditingController(text: _settings.minimaxModel);
-    _minimaxVoiceCtrl = TextEditingController(text: _settings.minimaxVoiceId);
+    _minimaxKeyCtrl.text = _settings.minimaxApiKey;
+    _minimaxGroupIdCtrl.text = _settings.minimaxGroupId;
+    _minimaxModelCtrl.text = _settings.minimaxModel;
+    _minimaxVoiceCtrl.text = _settings.minimaxVoiceId;
     _ttsSpeed = _settings.minimaxSpeed;
 
     setState(() {
@@ -210,7 +214,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     bool obscureKey = true;
     bool setAsActive = isNew;
 
-    await showDialog(
+    // 弹窗关闭后（无论保存/取消）释放局部控制器，避免累积泄漏。
+    try {
+      await showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDlgState) {
@@ -496,7 +502,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           );
         },
       ),
-    );
+      );
+    } finally {
+      nameCtrl.dispose();
+      urlCtrl.dispose();
+      keyCtrl.dispose();
+      modelCtrl.dispose();
+    }
   }
 
   // --- 生图多配置管理 ---
@@ -569,7 +581,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     bool obscureKey = true;
     bool setAsActive = isNew;
 
-    await showDialog(
+    // 弹窗关闭后（无论保存/取消）释放局部控制器，避免累积泄漏。
+    try {
+      await showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDlgState) {
@@ -817,7 +831,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           );
         },
       ),
-    );
+      );
+    } finally {
+      nameCtrl.dispose();
+      urlCtrl.dispose();
+      keyCtrl.dispose();
+      modelCtrl.dispose();
+    }
   }
 
   Widget _buildKeyField({

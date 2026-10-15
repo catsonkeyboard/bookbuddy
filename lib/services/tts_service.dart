@@ -196,22 +196,44 @@ class TtsService {
     }
   }
 
+  /// 单个字符码点 → 16 进制数值（0-15）；非 hex 字符返回 -1。
+  /// 避免对数百万字符的音频串做全量正则与逐字节 substring（主线程卡死 + GC 风暴）。
+  static int _hexValue(int codeUnit) {
+    if (codeUnit >= 0x30 && codeUnit <= 0x39) return codeUnit - 0x30; // 0-9
+    if (codeUnit >= 0x41 && codeUnit <= 0x46) return codeUnit - 0x37; // A-F
+    if (codeUnit >= 0x61 && codeUnit <= 0x66) return codeUnit - 0x57; // a-f
+    return -1;
+  }
+
   /// 解码 MiniMax 音频数据（支持 Hex 编码及 Base64 编码自动适配）
   Uint8List _decodeAudioData(String raw) {
     final trimmed = raw.trim();
 
-    // 1. 判断是否是纯十六进制字符串 (Hex)
-    final hexRegExp = RegExp(r'^[0-9a-fA-F]+$');
-    if (trimmed.length % 2 == 0 && hexRegExp.hasMatch(trimmed)) {
-      try {
-        final len = trimmed.length;
-        final result = Uint8List(len ~/ 2);
-        for (var i = 0; i < len; i += 2) {
-          result[i ~/ 2] = int.parse(trimmed.substring(i, i + 2), radix: 16);
+    // 1. 仅采样前 64 个字符判断是否为 Hex：长度为偶数且采样段全为 hex 字符。
+    //    音频数据体量极大，全量校验代价过高；首段不一致即可快速排除。
+    if (trimmed.length % 2 == 0 && trimmed.isNotEmpty) {
+      final sampleEnd = trimmed.length < 64 ? trimmed.length : 64;
+      var isHex = true;
+      for (var i = 0; i < sampleEnd; i++) {
+        if (_hexValue(trimmed.codeUnitAt(i)) < 0) {
+          isHex = false;
+          break;
         }
-        return result;
-      } catch (_) {
-        // 解码异常则回退走 base64
+      }
+      if (isHex) {
+        try {
+          final len = trimmed.length;
+          final result = Uint8List(len ~/ 2);
+          for (var i = 0, j = 0; i < len; i += 2, j++) {
+            final hi = _hexValue(trimmed.codeUnitAt(i));
+            final lo = _hexValue(trimmed.codeUnitAt(i + 1));
+            if (hi < 0 || lo < 0) throw const FormatException('含非 hex 字符');
+            result[j] = (hi << 4) | lo;
+          }
+          return result;
+        } on FormatException {
+          // 中后段混入非 hex 字符（采样未覆盖），回退走 base64
+        }
       }
     }
 

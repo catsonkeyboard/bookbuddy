@@ -445,17 +445,19 @@ class AppSettings {
   factory AppSettings.fromJson(Map<String, dynamic> json) {
     List<LlmProfile>? loadedLlmProfiles;
     if (json['llmProfiles'] is List) {
+      // jsonDecode 出的元素是 _Map<dynamic,dynamic>，whereType<Map<String, dynamic>> 会全部过滤掉，
+      // 导致用户配置被默认值覆盖；先 whereType<Map> 再逐个深转 key 为 String
       loadedLlmProfiles = (json['llmProfiles'] as List)
-          .whereType<Map<String, dynamic>>()
-          .map((item) => LlmProfile.fromJson(item))
+          .whereType<Map>()
+          .map((item) => LlmProfile.fromJson(Map<String, dynamic>.from(item)))
           .toList();
     }
 
     List<ImageProfile>? loadedImageProfiles;
     if (json['imageProfiles'] is List) {
       loadedImageProfiles = (json['imageProfiles'] as List)
-          .whereType<Map<String, dynamic>>()
-          .map((item) => ImageProfile.fromJson(item))
+          .whereType<Map>()
+          .map((item) => ImageProfile.fromJson(Map<String, dynamic>.from(item)))
           .toList();
     }
 

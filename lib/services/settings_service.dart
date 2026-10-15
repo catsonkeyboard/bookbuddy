@@ -66,8 +66,11 @@ class SettingsService {
       }
     } catch (_) {}
 
-    // 兼容旧版：若当前激活 profile 的 key 为空，尝试从旧的安全存储中读取恢复
-    if (settings.llmApiKey.isEmpty) {
+    // 兼容旧版单密钥存储：仅在确认为无 profiles 的纯老版本数据时迁移，
+    // 否则旧 key 会注入当前激活 profile，造成跨 profile 密钥污染
+    // （例如旧版 Gemini 的 key 被写进 DeepSeek profile）。
+    final legacySingleKeyData = _isLegacySingleKeyData(raw);
+    if (legacySingleKeyData && settings.llmApiKey.isEmpty) {
       try {
         final secLlm = await _secureStorage.read(key: _secureLlmKey);
         if (secLlm != null && secLlm.isNotEmpty) {
@@ -80,7 +83,7 @@ class SettingsService {
       }
     }
 
-    if (settings.imageApiKey.isEmpty) {
+    if (legacySingleKeyData && settings.imageApiKey.isEmpty) {
       try {
         final secImg = await _secureStorage.read(key: _secureImgKey);
         if (secImg != null && secImg.isNotEmpty) {
@@ -124,6 +127,18 @@ class SettingsService {
       }
     }
     return settings;
+  }
+
+  /// 纯老版本数据（无 llmProfiles / imageProfiles 列表）才允许做单密钥迁移。
+  bool _isLegacySingleKeyData(String? raw) {
+    if (raw == null) return false;
+    try {
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      return (data['llmProfiles'] as List? ?? const []).isEmpty &&
+          (data['imageProfiles'] as List? ?? const []).isEmpty;
+    } catch (_) {
+      return false;
+    }
   }
 
   bool _containsSecrets(String raw) {

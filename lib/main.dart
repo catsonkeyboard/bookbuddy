@@ -161,7 +161,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         MaterialPageRoute(builder: (_) => BookReaderScreen(book: opened)),
       );
     }
-    _loadBooks();
+    // 阅读器内可能重绘/重录，返回后刷新书架；页面可能已在 await 期间退出。
+    if (mounted) _loadBooks();
   }
 
   Future<void> _confirmDeleteBook(BookSummary book) async {

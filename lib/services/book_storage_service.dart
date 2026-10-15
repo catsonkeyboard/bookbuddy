@@ -40,7 +40,8 @@ Map<String, int> _countCharacterCardUsage(String dirPath) {
 /// 读不出来、不是这本书的文件返回 null，由调用方退回备份。
 Set<String>? _readCharacterCardIds(File file, String expectedId) {
   try {
-    final json = jsonDecode(file.readAsStringSync());
+    // 与 _readBookSync 一致：直接从 UTF-8 字节解析，不先拼出整个字符串。
+    final json = utf8.decoder.fuse(json.decoder).convert(file.readAsBytesSync());
     if (json is! Map || json['id'] != expectedId) return null;
     return {
       for (final id in json['characterCardIds'] as List? ?? const [])
@@ -91,6 +92,16 @@ List<BookSummary> _readBookSummaries(String dirPath) =>
     _readBooksIn(dirPath).map(BookSummary.of).toList()
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
+/// Windows 上文件被占用时 renameSync 会直接抛错，降级为复制 + 删除。
+void _safeRenameSync(File file, String newPath) {
+  try {
+    file.renameSync(newPath);
+  } catch (_) {
+    file.copySync(newPath);
+    file.deleteSync();
+  }
+}
+
 /// 在后台 isolate 里运行：把整本书编码写盘，上一份有效文件留作备份。
 ///
 /// 编码和对旧文件的校验都要过一遍十几 MB 的插画 base64，所以整段不在主线程做。
@@ -107,16 +118,16 @@ void _writeBookFile((String, PictureBook) dirPathAndBook) {
     if (file.existsSync()) {
       if (_readBookSync(file, book.id) != null) {
         if (backup.existsSync()) backup.deleteSync();
-        file.renameSync(backup.path);
+        _safeRenameSync(file, backup.path);
         movedOriginal = true;
       } else {
         // Retain a damaged file for manual recovery and keep any valid backup.
         final damaged =
             '${file.path}.corrupt.${DateTime.now().microsecondsSinceEpoch}';
-        file.renameSync(damaged);
+        _safeRenameSync(file, damaged);
       }
     }
-    temp.renameSync(file.path);
+    _safeRenameSync(temp, file.path);
   } catch (_) {
     if (movedOriginal && !file.existsSync() && backup.existsSync()) {
       backup.copySync(file.path);
@@ -244,27 +255,50 @@ class BookStorageService {
 
   /// 删除指定绘本及其配套文件
   Future<void> deleteBook(String id) async {
-    final pending = _pendingSaves[id];
-    if (pending != null) {
-      try {
-        await pending;
-      } catch (_) {}
-    }
-    final dir = await _getBooksDirectory();
-    for (final suffix in ['.json', '.json.bak', '.json.tmp']) {
-      final file = File('${dir.path}/$id$suffix');
-      if (await file.exists()) await file.delete();
-    }
-
-    // 联动清理对应的音频目录，彻底回收手机存储
-    try {
-      final appDir = await getApplicationDocumentsDirectory();
-      final audioDir = Directory('${appDir.path}/bookbuddy_audio/$id');
-      if (await audioDir.exists()) {
-        await audioDir.delete(recursive: true);
+    // 与 saveBook 相同的链式互斥：删除也占位到 _pendingSaves，
+    // 避免和并发 saveBook 产生「删完又写回」或「写完被误删」的竞态。
+    final previous = _pendingSaves[id];
+    final deletion = () async {
+      if (previous != null) {
+        try {
+          await previous;
+        } catch (_) {}
       }
-    } catch (_) {}
+      final dir = await _getBooksDirectory();
+      // 一并清理历史损坏重命名产物（.json.corrupt.<timestamp>），避免长期滞留。
+      try {
+        final prefix = '$id.json.corrupt.';
+        for (final entity in dir.listSync()) {
+          if (entity is File &&
+              entity.uri.pathSegments.last.startsWith(prefix)) {
+            try {
+              entity.deleteSync();
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
+      for (final suffix in ['.json', '.json.bak', '.json.tmp']) {
+        final file = File('${dir.path}/$id$suffix');
+        if (await file.exists()) await file.delete();
+      }
 
-    booksChangedNotifier.value++;
+      // 联动清理对应的音频目录，彻底回收手机存储
+      try {
+        final appDir = await getApplicationDocumentsDirectory();
+        final audioDir = Directory('${appDir.path}/bookbuddy_audio/$id');
+        if (await audioDir.exists()) {
+          await audioDir.delete(recursive: true);
+        }
+      } catch (_) {}
+    }();
+    _pendingSaves[id] = deletion;
+    try {
+      await deletion;
+      booksChangedNotifier.value++;
+    } finally {
+      if (identical(_pendingSaves[id], deletion)) {
+        _pendingSaves.remove(id);
+      }
+    }
   }
 }

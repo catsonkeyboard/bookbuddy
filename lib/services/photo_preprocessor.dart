@@ -36,5 +36,13 @@ Uint8List preprocessPhoto(Uint8List bytes) {
   }
   // 位置、机型等元数据一律不带出本机。
   image.exif = img.ExifData();
-  return Uint8List.fromList(img.encodeJpg(image, quality: 85));
+  // 带 alpha 通道的图（如透明 PNG）直接转 JPEG，透明区域会变成黑色破坏识别，先铺纯白底再压。
+  if (image.hasAlpha) {
+    final flattened = img.Image(width: image.width, height: image.height);
+    flattened.clear(img.ColorRgb8(255, 255, 255));
+    img.compositeImage(flattened, image);
+    image = flattened;
+  }
+  // encodeJpg 已返回 Uint8List，无需 Uint8List.fromList 再拷贝一次。
+  return img.encodeJpg(image, quality: 85);
 }

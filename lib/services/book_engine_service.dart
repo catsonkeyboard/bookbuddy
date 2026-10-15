@@ -913,7 +913,13 @@ $numbered
       );
       final cands = resp.data['candidates'] as List? ?? [];
       if (cands.isEmpty) throw Exception('Gemini 未返回内容');
-      final parts = cands[0]['content']['parts'] as List? ?? [];
+      // 安全拦截 / 截断时 content 可能为 null，直接取 ['parts'] 会抛 NoSuchMethodError。
+      final cand = cands[0] as Map? ?? {};
+      final finishReason = cand['finishReason'];
+      if (finishReason != null && finishReason != 'STOP') {
+        throw Exception('Gemini 响应被中断，原因: $finishReason');
+      }
+      final parts = cand['content']?['parts'] as List? ?? [];
       return parts.map((p) => p['text'] ?? '').join();
     } else if (settings.llmType == 'anthropic') {
       final base = settings.llmBaseUrl.endsWith('/')
@@ -1306,23 +1312,14 @@ $numbered
     if (value.startsWith('data:')) {
       return value.substring(5, value.indexOf(';'));
     }
-    try {
-      final bytes = base64Decode(value);
-      if (bytes.length >= 8 &&
-          bytes[0] == 0x89 &&
-          bytes[1] == 0x50 &&
-          bytes[2] == 0x4e &&
-          bytes[3] == 0x47) {
-        return 'image/png';
-      }
-      if (bytes.length >= 12 &&
-          bytes[0] == 0x52 &&
-          bytes[1] == 0x49 &&
-          bytes[8] == 0x57 &&
-          bytes[9] == 0x45) {
-        return 'image/webp';
-      }
-    } catch (_) {}
+    // 用 Base64 前缀签名判断格式，避免对整张多 MB 图片全量 base64Decode（每页生图反复调用会卡主线程）。
+    // PNG 头 89 50 4E 47 → 'iVBORw0KGgo'；WebP 头 'RIFF....WEBP' → 'UklGR'。
+    if (value.length >= 12 && value.startsWith('iVBORw0KGgo')) {
+      return 'image/png';
+    }
+    if (value.length >= 12 && value.startsWith('UklGR')) {
+      return 'image/webp';
+    }
     return 'image/jpeg';
   }
 

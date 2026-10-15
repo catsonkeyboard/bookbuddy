@@ -178,13 +178,16 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
         ),
       );
 
-  void _editCharacter(BookCharacter character, {bool isNew = false}) {
+  Future<void> _editCharacter(
+    BookCharacter character, {
+    bool isNew = false,
+  }) async {
     final nameCtrl = TextEditingController(text: character.name);
     final speciesCtrl = TextEditingController(text: character.species);
     final appearanceCtrl = TextEditingController(text: character.appearance);
     final outfitCtrl = TextEditingController(text: character.defaultOutfit);
     var isAnimal = character.isAnimal;
-    showDialog(
+    final dialogFuture = showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -268,6 +271,15 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
         ),
       ),
     );
+    // 等弹窗关闭（无论取消还是保存）后统一释放输入控制器，避免泄漏
+    try {
+      await dialogFuture;
+    } finally {
+      nameCtrl.dispose();
+      speciesCtrl.dispose();
+      appearanceCtrl.dispose();
+      outfitCtrl.dispose();
+    }
   }
 
   void _addCharacter() {
@@ -406,14 +418,14 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
     }
   }
 
-  void _editPage(int index) {
+  Future<void> _editPage(int index) async {
     final page = _pages[index];
     final textCtrl = TextEditingController(text: page.text);
     final actionCtrl = TextEditingController(text: page.sceneAction);
     final emotionCtrl = TextEditingController(text: page.sceneEmotion);
     final compositionCtrl = TextEditingController(text: page.sceneComposition);
 
-    showDialog(
+    final dialogFuture = showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text('✏️ 编辑第 ${index + 1} 幕 / 页'),
@@ -510,9 +522,18 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
         ],
       ),
     );
+    // 等弹窗关闭（无论取消还是保存）后统一释放输入控制器，避免泄漏
+    try {
+      await dialogFuture;
+    } finally {
+      textCtrl.dispose();
+      actionCtrl.dispose();
+      emotionCtrl.dispose();
+      compositionCtrl.dispose();
+    }
   }
 
-  void _editPageCharacters(int index) {
+  Future<void> _editPageCharacters(int index) async {
     final page = _pages[index];
     final selected = page.characterIds.toSet();
     final outfitControllers = {
@@ -521,7 +542,7 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
           text: page.outfitOverrides[character.id] ?? '',
         ),
     };
-    showDialog(
+    final dialogFuture = showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -587,6 +608,14 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
         ),
       ),
     );
+    // 等弹窗关闭（无论取消还是保存）后统一释放换装输入控制器，避免泄漏
+    try {
+      await dialogFuture;
+    } finally {
+      for (final ctrl in outfitControllers.values) {
+        ctrl.dispose();
+      }
+    }
   }
 
   void _batchToggle(bool enable) {
@@ -598,6 +627,8 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
   }
 
   Future<void> _startDrawIllustrations() async {
+    // 防重入：正在生成时忽略重复点击，避免并发绘制
+    if (_isGenerating) return;
     final activeCount = _pages.where((p) => p.needIllustration).length;
     if (activeCount == 0) {
       ScaffoldMessenger.of(context)

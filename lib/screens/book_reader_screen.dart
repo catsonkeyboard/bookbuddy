@@ -39,6 +39,9 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   final TtsService _ttsService = TtsService();
 
   final AudioPlayer _audioPlayer = AudioPlayer();
+  // 保存音频事件订阅，dispose 时统一 cancel，避免泄漏
+  StreamSubscription<PlayerState>? _playerStateSub;
+  StreamSubscription<void>? _playerCompleteSub;
   PlayerState _playerState = PlayerState.stopped;
   bool _isAudioSynthesizing = false;
   bool _autoPlayNext = false; // 是否朗读完自动翻下一页
@@ -66,13 +69,13 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     _book = widget.book;
     _pageController = PageController();
 
-    _audioPlayer.onPlayerStateChanged.listen((state) {
+    _playerStateSub = _audioPlayer.onPlayerStateChanged.listen((state) {
       if (mounted) {
         setState(() => _playerState = state);
       }
     });
 
-    _audioPlayer.onPlayerComplete.listen((event) {
+    _playerCompleteSub = _audioPlayer.onPlayerComplete.listen((event) {
       if (mounted) {
         setState(() => _playerState = PlayerState.completed);
         _handleAudioCompleted();
@@ -82,6 +85,9 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
 
   @override
   void dispose() {
+    // 先取消事件订阅再停播放器，避免 dispose 后仍收到回调
+    unawaited(_playerStateSub?.cancel() ?? Future.value());
+    unawaited(_playerCompleteSub?.cancel() ?? Future.value());
     unawaited(WakelockPlus.disable().catchError((_) {}));
     _audioPlayer.stop();
     _audioPlayer.dispose();
@@ -94,6 +100,8 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     if (_autoPlayNext && _currentPage < _book.pages.length - 1) {
       Future.delayed(const Duration(milliseconds: 600), () {
         if (!mounted) return;
+        // PageView 尚未挂载时调用 nextPage 会抛异常，先确认有客户端
+        if (!_pageController.hasClients) return;
         _pageController.nextPage(
           duration: const Duration(milliseconds: 400),
           curve: Curves.easeInOut,
@@ -227,7 +235,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     await _togglePlayCurrentPage(forceRegen: true);
   }
 
-  void _openRegenDialog() {
+  Future<void> _openRegenDialog() async {
     final curItem = _book.pages[_currentPage];
     final style = StyleCatalog.styles.firstWhere(
       (s) => s.id == _book.styleId,
@@ -245,7 +253,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
       text: curItem.sceneComposition,
     );
 
-    showDialog(
+    final dialogFuture = showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text('🎨 修改并重绘第 ${_currentPage + 1} 页插画'),
@@ -382,6 +390,13 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
         ],
       ),
     );
+    // 等弹窗关闭（无论取消还是确认）后统一释放输入控制器，避免泄漏
+    try {
+      await dialogFuture;
+    } finally {
+      promptCtrl.dispose();
+      compositionCtrl.dispose();
+    }
   }
 
   void _showCharacterReferences() {
@@ -547,7 +562,10 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                                   );
                                                 }
                                               } finally {
-                                                setDialogState(() => updatingCharId = null);
+                                                // 弹窗可能已关闭，向已卸载的对话框调 setState 会崩溃
+                                                if (ctx.mounted) {
+                                                  setDialogState(() => updatingCharId = null);
+                                                }
                                               }
                                             },
                                     ),

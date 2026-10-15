@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -23,13 +24,19 @@ class CharacterStorageService {
 
   CharacterStorageService({this._directory});
 
-  /// 卡片 id 只能是单个目录名：非空、不含路径分隔符、不是 . 或 ..。
+  /// 卡片 id 白名单：字母/数字/下划线/连字符，长度 1-64（项目 id 由 uuid 截取生成，兼容）。
+  static final RegExp _idPattern = RegExp(r'^[a-zA-Z0-9_\-]{1,64}$');
+
+  /// Windows 保留设备名（含带序号变体），做目录名时会指向设备文件，必须拦截。
+  static final _windowsReservedNames = <String>{
+    'CON', 'PRN', 'AUX', 'NUL',
+    for (var i = 1; i <= 9; i++) ...['COM$i', 'LPT$i'],
+  };
+
+  /// 卡片 id 只能是安全的单个目录名。
   static bool isValidId(String id) =>
-      id.isNotEmpty &&
-      !id.contains('/') &&
-      !id.contains('\\') &&
-      id != '.' &&
-      id != '..';
+      _idPattern.hasMatch(id) &&
+      !_windowsReservedNames.contains(id.toUpperCase());
 
   /// 相对路径只能指向角色库目录内部：非空、不是绝对路径、任一段都不是 . 或 ..。
   static bool isSafeRelativePath(String relativePath) =>
@@ -151,27 +158,27 @@ class CharacterStorageService {
         : base64Image;
     final bytes = base64Decode(raw);
     final ext = _isPng(bytes) ? 'png' : 'jpg';
-    final relative = await writeImage(cardId, 'anchor_$styleId.$ext', bytes);
     final root = await _root();
-    try {
-      await _mutate((cards) {
-        final index = cards.indexWhere((c) => c.id == cardId);
-        if (index < 0) {
-          throw StateError('角色卡 $cardId 不存在，无法保存定妆图');
-        }
-        final old = cards[index].anchorImagePaths[styleId];
-        if (old != null && old != relative) {
+    var savedRelative = '';
+    // 写盘放在 _mutate 互斥闭包内：避免并发保存同卡同风格定妆照时，
+    // 一方刚写入的文件被另一方的旧映射清理逻辑删掉。
+    await _mutate((cards) async {
+      final index = cards.indexWhere((c) => c.id == cardId);
+      if (index < 0) {
+        throw StateError('角色卡 $cardId 不存在，无法保存定妆图');
+      }
+      final relative = await writeImage(cardId, 'anchor_$styleId.$ext', bytes);
+      final old = cards[index].anchorImagePaths[styleId];
+      if (old != null && old != relative) {
+        try {
           final oldFile = File('${root.path}/$old');
           if (oldFile.existsSync()) oldFile.deleteSync();
-        }
-        cards[index].anchorImagePaths[styleId] = relative;
-      });
-    } catch (_) {
-      final written = File('${root.path}/$relative');
-      if (await written.exists()) await written.delete();
-      rethrow;
-    }
-    return relative;
+        } catch (_) {}
+      }
+      cards[index].anchorImagePaths[styleId] = relative;
+      savedRelative = relative;
+    });
+    return savedRelative;
   }
 
   /// 删除卡片全部定妆图文件并清空映射（外貌设定变更时调用）。
@@ -236,8 +243,8 @@ class CharacterStorageService {
       bytes[2] == 0x4e &&
       bytes[3] == 0x47;
 
-  /// 读 → 改 → 原子写，排队执行；成功后触发通知。
-  Future<void> _mutate(void Function(List<CharacterCard> cards) change) async {
+  /// 读 → 改 → 原子写，排队执行；成功后触发通知。闭包内可包含异步写盘。
+  Future<void> _mutate(FutureOr<void> Function(List<CharacterCard> cards) change) async {
     final previous = _pendingSave;
     final save = () async {
       if (previous != null) {
@@ -248,7 +255,7 @@ class CharacterStorageService {
         }
       }
       final cards = await _readAll();
-      change(cards);
+      await change(cards);
       await _writeAll(cards);
     }();
     _pendingSave = save;

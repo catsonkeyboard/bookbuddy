@@ -172,6 +172,43 @@ void main() {
       expect(res!.startsWith('iVBORw0KGgo'), isTrue);
     });
 
+    test('profiles 为 _Map<dynamic,dynamic> 风格 JSON 时不被丢弃', () {
+      // 显式构造 _Map<dynamic,dynamic>（等价于普通 jsonDecode 链路里丢掉泛型约束的 Map），
+      // 旧实现 whereType<Map<String, dynamic>>() 会静默过滤全部 profile，导致用户配置被默认值覆盖
+      final llmProfileRaw = <dynamic, dynamic>{
+        'id': 'llm_keep_me',
+        'name': '我的 DeepSeek',
+        'providerType': 'openai',
+        'baseUrl': 'https://api.deepseek.com/v1',
+        'apiKey': 'sk-keep',
+        'model': 'deepseek-chat',
+      };
+      final imageProfileRaw = <dynamic, dynamic>{
+        'id': 'img_keep_me',
+        'name': '我的生图',
+        'providerType': 'openai',
+        'baseUrl': 'https://open.bigmodel.cn/api/paas/v4/images/generations',
+        'apiKey': 'sk-img',
+        'model': 'glm-image',
+      };
+      final decoded = <String, dynamic>{
+        'llmProfiles': [llmProfileRaw],
+        'activeLlmProfileId': 'llm_keep_me',
+        'imageProfiles': [imageProfileRaw],
+        'activeImageProfileId': 'img_keep_me',
+      };
+
+      final settings = AppSettings.fromJson(decoded);
+      expect(settings.llmProfiles, hasLength(1));
+      expect(settings.llmProfiles.first.id, 'llm_keep_me');
+      expect(settings.llmProfiles.first.apiKey, 'sk-keep');
+      expect(settings.activeLlmProfileId, 'llm_keep_me');
+      expect(settings.imageProfiles, hasLength(1));
+      expect(settings.imageProfiles.first.id, 'img_keep_me');
+      expect(settings.imageProfiles.first.model, 'glm-image');
+      expect(settings.activeImageProfileId, 'img_keep_me');
+    });
+
     test('Old format JSON backward compatibility upgrade', () {
       final legacyJson = {
         'llmType': 'anthropic',

@@ -176,6 +176,8 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
         ),
       );
       if (confirm != true) return false;
+      // 弹窗 await 期间页面可能已退出，继续操作 context/storage 会出错。
+      if (!mounted) return false;
       try {
         await _storage.clearAnchors(_card.id);
       } catch (e) {

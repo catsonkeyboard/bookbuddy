@@ -144,6 +144,8 @@ class _CharacterLibraryScreenState extends State<CharacterLibraryScreen> {
         return Image.file(
           file,
           fit: BoxFit.cover,
+          // 缩略图格子最宽 200 逻辑像素，限制解码宽度避免 4000px 原图全尺寸解码撑爆内存。
+          cacheWidth: 400,
           errorBuilder: (ctx, error, stack) => const Center(
             child: Icon(Icons.broken_image_outlined, size: 40, color: Colors.grey),
           ),

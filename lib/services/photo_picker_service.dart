@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 enum PhotoSource { camera, gallery }
@@ -17,13 +18,22 @@ class PhotoPickerService {
 
   /// 返回原始图片字节；用户取消时返回 null。先让系统把超大图缩一轮，后续还会统一预处理。
   Future<Uint8List?> pick(PhotoSource source) async {
-    final file = await _picker.pickImage(
-      source: source == PhotoSource.camera ? ImageSource.camera : ImageSource.gallery,
-      maxWidth: 2048,
-      maxHeight: 2048,
-    );
-    if (file == null) return null;
-    return file.readAsBytes();
+    try {
+      final file = await _picker.pickImage(
+        source: source == PhotoSource.camera ? ImageSource.camera : ImageSource.gallery,
+        maxWidth: 2048,
+        maxHeight: 2048,
+      );
+      if (file == null) return null;
+      return file.readAsBytes();
+    } on PlatformException catch (e) {
+      // 相机 / 相册权限被拒绝等系统级错误：记录日志并按用户取消处理，避免直接闪退。
+      debugPrint('PhotoPickerService.pick PlatformException: ${e.code} ${e.message}');
+      return null;
+    } catch (e) {
+      debugPrint('PhotoPickerService.pick 未预期异常: $e');
+      return null;
+    }
   }
 
   /// Android 上拍照时进程可能被系统回收；重新进入编辑页时找回那张照片。其他平台返回 null。

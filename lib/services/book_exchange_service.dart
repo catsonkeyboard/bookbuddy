@@ -296,7 +296,8 @@ class BookExchangeService {
       _encodeBbBytes,
       _ExportPayload(book, audioFiles, appVersion),
     );
-    final tmp = File('$outputPath.tmp');
+    // 临时文件名加唯一后缀，避免并发导出到同一路径时互相覆盖。
+    final tmp = File('$outputPath.${const Uuid().v4()}.tmp');
     await tmp.writeAsBytes(bytes, flush: true);
     try {
       await tmp.rename(outputPath);

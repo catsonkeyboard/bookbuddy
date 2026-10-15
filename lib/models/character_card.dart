@@ -108,16 +108,21 @@ class CharacterCard {
         name: json['name']?.toString() ?? '',
         kind: CharacterKind.values.firstWhere(
           (k) => k.name == json['kind'],
-          orElse: () => CharacterKind.human,
+          // 与构造函数默认值保持一致，均为 animal
+          orElse: () => CharacterKind.animal,
         ),
         species: json['species']?.toString() ?? '',
         appearance: json['appearance']?.toString() ?? '',
         defaultOutfit: json['defaultOutfit']?.toString() ?? '',
         personality: json['personality']?.toString() ?? '',
         catchphrase: json['catchphrase']?.toString() ?? '',
-        anchorImagePaths: (json['anchorImagePaths'] as Map? ?? {}).map(
-          (key, value) => MapEntry(key.toString(), value.toString()),
-        ),
+        // 过滤 null/空值，避免 value.toString() 把 null 变成 "null" 脏路径
+        anchorImagePaths: ((json['anchorImagePaths'] as Map? ?? {})
+                .map((key, value) => MapEntry(key.toString(), value))
+                ..removeWhere(
+                  (_, value) => value == null || value.toString().isEmpty,
+                ))
+            .map((key, value) => MapEntry(key, value.toString())),
         photoPath: json['photoPath'] as String?,
         createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? ''),
         lastUsedAt: DateTime.tryParse(json['lastUsedAt']?.toString() ?? ''),

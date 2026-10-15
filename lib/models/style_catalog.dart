@@ -52,4 +52,10 @@ class StyleCatalog {
       negative: '低质量, 模糊, 变形, 多余肢体, 错误面部, 文字, 水印, 恐怖, 血腥, 暗黑, 西洋油画感, 写实动物, 四足野兽, 凶残巨兽',
     ),
   ];
+
+  /// 按 id 查找画风；id 为空或不认识时安全回落到水彩童话，供 UI 层直接使用。
+  static BookStyle byIdOrDefault(String? id) => styles.firstWhere(
+        (s) => s.id == id,
+        orElse: () => styles.first,
+      );
 }
