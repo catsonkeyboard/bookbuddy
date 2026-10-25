@@ -19,6 +19,14 @@ class SettingsService {
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
   bool _triedLegacyCleanup = false;
 
+  /// 本进程内安全存储读取是否失败过（Keystore 损坏等）。置位后 [_doSave]
+  /// 会先做恢复读，防止「读到空密钥 → 保存覆盖 → 密钥永久丢失」。
+  static bool _secureReadFailed = false;
+
+  /// 进程内保存队列：loadSettings 里的 legacy 清理会触发 saveSettings，
+  /// 与用户侧并发保存交错时按调用顺序串行执行，防 last-write-wins 丢更新。
+  static Future<void>? _saveQueue;
+
   Future<AppSettings> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_prefsKey);
@@ -36,35 +44,17 @@ class SettingsService {
     // 尝试从 Keychain 安全硬件存储读取更完整的配置
     try {
       final secFull = await _secureStorage.read(key: _secureFullKey);
+      _secureReadFailed = false;
       if (secFull != null && secFull.isNotEmpty) {
         final secSettings = AppSettings.fromJson(jsonDecode(secFull));
-        // 将安全存储中的 profiles key 同步到设置中
-        for (var p in secSettings.llmProfiles) {
-          final target = settings.llmProfiles
-              .where((x) => x.id == p.id)
-              .firstOrNull;
-          if (target != null && target.apiKey.isEmpty && p.apiKey.isNotEmpty) {
-            target.apiKey = p.apiKey;
-          }
-        }
-        for (var p in secSettings.imageProfiles) {
-          final target = settings.imageProfiles
-              .where((x) => x.id == p.id)
-              .firstOrNull;
-          if (target != null && target.apiKey.isEmpty && p.apiKey.isNotEmpty) {
-            target.apiKey = p.apiKey;
-          }
-        }
-        if (settings.fallbackImageApiKey.isEmpty &&
-            secSettings.fallbackImageApiKey.isNotEmpty) {
-          settings.fallbackImageApiKey = secSettings.fallbackImageApiKey;
-        }
-        if (settings.minimaxApiKey.isEmpty &&
-            secSettings.minimaxApiKey.isNotEmpty) {
-          settings.minimaxApiKey = secSettings.minimaxApiKey;
-        }
+        _mergeSecretKeys(settings, secSettings);
       }
-    } catch (_) {}
+    } catch (_) {
+      // 安全存储读取失败（Android Keystore 损坏/恢复后是已知故障源）：
+      // 标记本次会话读取不健康。此时内存里的密钥全空只是「没读到」，
+      // 后续保存若直接覆盖安全存储会把用户所有 API Key 永久清空。
+      _secureReadFailed = true;
+    }
 
     // 兼容旧版单密钥存储：仅在确认为无 profiles 的纯老版本数据时迁移，
     // 否则旧 key 会注入当前激活 profile，造成跨 profile 密钥污染
@@ -167,8 +157,69 @@ class SettingsService {
     return false;
   }
 
-  Future<void> saveSettings(AppSettings settings) async {
+  Future<void> saveSettings(AppSettings settings) {
+    final previous = _saveQueue;
+    final save = _runSave(previous, settings);
+    _saveQueue = save;
+    // 队列里排在前面的保存先完成；失败不阻塞后续保存。
+    return save.whenComplete(() {
+      if (identical(_saveQueue, save)) _saveQueue = null;
+    });
+  }
+
+  Future<void> _runSave(Future<void>? previous, AppSettings settings) async {
+    if (previous != null) {
+      try {
+        await previous;
+      } catch (_) {
+        // A failed earlier save must not block later attempts.
+      }
+    }
+    await _doSave(settings);
+  }
+
+  /// 把 [source]（安全存储读出的完整配置）中的密钥按「只填空」策略合并进 [target]。
+  static void _mergeSecretKeys(AppSettings target, AppSettings source) {
+    for (var p in source.llmProfiles) {
+      final t = target.llmProfiles.where((x) => x.id == p.id).firstOrNull;
+      if (t != null && t.apiKey.isEmpty && p.apiKey.isNotEmpty) {
+        t.apiKey = p.apiKey;
+      }
+    }
+    for (var p in source.imageProfiles) {
+      final t = target.imageProfiles.where((x) => x.id == p.id).firstOrNull;
+      if (t != null && t.apiKey.isEmpty && p.apiKey.isNotEmpty) {
+        t.apiKey = p.apiKey;
+      }
+    }
+    if (target.fallbackImageApiKey.isEmpty &&
+        source.fallbackImageApiKey.isNotEmpty) {
+      target.fallbackImageApiKey = source.fallbackImageApiKey;
+    }
+    if (target.minimaxApiKey.isEmpty && source.minimaxApiKey.isNotEmpty) {
+      target.minimaxApiKey = source.minimaxApiKey;
+    }
+  }
+
+  Future<void> _doSave(AppSettings settings) async {
     final prefs = await SharedPreferences.getInstance();
+
+    if (_secureReadFailed) {
+      // 本会话安全存储读取失败过：内存里的密钥可能只是「没读到」而非「真没有」。
+      // 先尝试恢复读一次：读到了就把真实密钥按只填空策略并回来再保存；
+      // 仍然失败说明安全存储当前不可用，只写无密钥的公开配置并放弃本次
+      // 密钥写回——绝不能用可能缺失密钥的内存状态覆盖安全存储。
+      try {
+        final secFull = await _secureStorage.read(key: _secureFullKey);
+        _secureReadFailed = false;
+        if (secFull != null && secFull.isNotEmpty) {
+          _mergeSecretKeys(settings, AppSettings.fromJson(jsonDecode(secFull)));
+        }
+      } catch (_) {
+        await prefs.setString(_prefsKey, jsonEncode(settings.toPublicJson()));
+        return;
+      }
+    }
 
     final jsonString = jsonEncode(settings.toJson());
 

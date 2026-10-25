@@ -8,17 +8,21 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-void main() {
-  final character = BookCharacter(
-    id: 'c1',
-    name: '小鹿',
-    species: '鹿',
-    isAnimal: true,
-    appearance: '浅棕毛，左耳有白斑，圆眼睛',
-    defaultOutfit: '蓝色围巾',
-    referenceImageBase64: 'portrait-base64',
-  );
+/// 每个测试按需构造，避免共享可变 fixture 在 --shuffle 下产生顺序依赖。
+BookCharacter character() => BookCharacter(
+      id: 'c1',
+      name: '小鹿',
+      species: '鹿',
+      isAnimal: true,
+      appearance: '浅棕毛，左耳有白斑，圆眼睛',
+      defaultOutfit: '蓝色围巾',
+      referenceImageBase64: 'portrait-base64',
+    );
 
+/// 生图出口会走 _cleanBase64，mock 返回值用合法 base64（含 '-' 等字符会被清洗改写）。
+const generatedImage = 'AQIDBA==';
+
+void main() {
   test('角色档案和每页换装在绘本序列化后保留', () {
     final book = PictureBook(
       id: 'book-1',
@@ -34,7 +38,7 @@ void main() {
           outfitOverrides: {'c1': '红色雨衣'},
         ),
       ],
-      characters: [character],
+      characters: [character()],
       createdAt: DateTime(2026, 1, 1),
     );
 
@@ -69,7 +73,7 @@ void main() {
     );
     final normal = engine.composePagePrompt(
       page: page,
-      characters: [character],
+      characters: [character()],
       scenePrompt: '小鹿站在树下',
     );
     expect(normal, contains('左耳有白斑'));
@@ -79,7 +83,7 @@ void main() {
     page.outfitOverrides = {'c1': '红色雨衣'};
     final changed = engine.composePagePrompt(
       page: page,
-      characters: [character],
+      characters: [character()],
       scenePrompt: '小鹿站在雨中',
     );
     expect(changed, contains('本页服装：红色雨衣'));
@@ -124,7 +128,7 @@ void main() {
 
   test('Gemini 多模态请求逐个发送角色参考图并保留文字约束', () async {
     final image = base64Encode([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]);
-    character.referenceImageBase64 = image;
+    final deer = character()..referenceImageBase64 = image;
     dynamic sent;
     final dio = Dio()
       ..interceptors.add(
@@ -140,7 +144,7 @@ void main() {
                       'content': {
                         'parts': [
                           {
-                            'inlineData': {'data': 'new-image'},
+                            'inlineData': {'data': generatedImage},
                           },
                         ],
                       },
@@ -173,9 +177,9 @@ void main() {
         negative: '',
       ),
       page: page,
-      characters: [character],
+      characters: [deer],
     );
-    expect(result, 'new-image');
+    expect(result, generatedImage);
     final parts = (sent['contents'][0]['parts'] as List);
     expect(parts.first['inlineData']['mimeType'], 'image/png');
     expect(parts.first['inlineData']['data'], image);
@@ -226,7 +230,7 @@ void main() {
         negative: '',
       ),
       page: page,
-      characters: [character],
+      characters: [character()],
     );
     expect(sent['prompt'], contains('左耳有白斑'));
     expect(sent.containsKey('image'), isFalse);
@@ -234,16 +238,17 @@ void main() {
   });
 
   test('参考图通道失败时不静默降级到纯文字通道', () async {
-    character.referenceImageBase64 = base64Encode([
-      0x89,
-      0x50,
-      0x4e,
-      0x47,
-      0,
-      0,
-      0,
-      0,
-    ]);
+    final deer = character()
+      ..referenceImageBase64 = base64Encode([
+        0x89,
+        0x50,
+        0x4e,
+        0x47,
+        0,
+        0,
+        0,
+        0,
+      ]);
     var requests = 0;
     final dio = Dio()
       ..interceptors.add(
@@ -282,7 +287,7 @@ void main() {
           negative: '',
         ),
         page: page,
-        characters: [character],
+        characters: [deer],
       ),
       throwsA(isA<StateError>()),
     );
@@ -450,7 +455,7 @@ void main() {
           initialPages: [
             BookPageItem(pageIndex: 0, text: '小鹿出发了', characterIds: ['c1']),
           ],
-          initialCharacters: [character],
+          initialCharacters: [character()],
           settings: AppSettings(),
         ),
       ),
@@ -465,5 +470,155 @@ void main() {
     await tester.tap(find.byTooltip('编辑正文与画面描述'));
     await tester.pumpAndSettle();
     expect(find.text('🧭 画面朝向与空间关系：'), findsOneWidget);
+  });
+
+  test('failover 成功路径：主通道 429 降级到备用通道并记录备用厂商', () async {
+    final paths = <String>[];
+    final dio = Dio()
+      ..interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            paths.add(options.path);
+            if (options.path.contains('generateContent')) {
+              // 主通道限流：429 属于「换个通道可能就好」的错误，允许降级。
+              handler.reject(
+                DioException(
+                  requestOptions: options,
+                  response: Response(
+                    requestOptions: options,
+                    statusCode: 429,
+                  ),
+                  type: DioExceptionType.badResponse,
+                ),
+              );
+              return;
+            }
+            handler.resolve(
+              Response(
+                requestOptions: options,
+                data: {
+                  'data': [
+                    {'b64_json': generatedImage},
+                  ],
+                },
+              ),
+            );
+          },
+        ),
+      );
+    final page = BookPageItem(pageIndex: 0, text: '小鹿走进森林', characterIds: []);
+    final settings = AppSettings(
+      imageType: 'gemini',
+      imageBaseUrl: 'https://example.test',
+      imageModel: 'gemini-image',
+      imageApiKey: 'test-key',
+      enableImageFallback: true,
+      fallbackImageType: 'openai',
+      fallbackImageBaseUrl: 'https://example.test/v1',
+      fallbackImageModel: 'dall-e-3',
+      fallbackImageApiKey: 'fallback-key',
+    );
+    final result = await BookEngineService(dio: dio).generateIllustration(
+      settings: settings,
+      style: const BookStyle(
+        id: 'test',
+        name: 'test',
+        desc: '',
+        prefix: '水彩',
+        negative: '',
+      ),
+      page: page,
+    );
+    expect(result, generatedImage);
+    expect(paths, hasLength(2));
+    expect(paths.first, contains('generateContent'));
+    expect(paths.last, contains('/images/generations'));
+    expect(page.imageProviderUsed, 'openai');
+    expect(page.imageModelUsed, 'dall-e-3');
+    expect(page.generationError, isNull);
+  });
+
+  test('failover：未启用备用通道时主通道异常原样 rethrow 且 generationError 落盘', () async {
+    final dio = Dio()
+      ..interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) => handler.reject(
+            DioException(
+              requestOptions: options,
+              message: 'primary unavailable',
+            ),
+          ),
+        ),
+      );
+    final page = BookPageItem(pageIndex: 0, text: '小鹿走进森林', characterIds: []);
+    final settings = AppSettings(
+      imageType: 'gemini',
+      imageBaseUrl: 'https://example.test',
+      imageModel: 'gemini-image',
+      imageApiKey: 'test-key',
+      enableImageFallback: false,
+      fallbackImageApiKey: 'fallback-key',
+    );
+    await expectLater(
+      BookEngineService(dio: dio).generateIllustration(
+        settings: settings,
+        style: const BookStyle(
+          id: 'test',
+          name: 'test',
+          desc: '',
+          prefix: '水彩',
+          negative: '',
+        ),
+        page: page,
+      ),
+      throwsA(isA<DioException>()),
+    );
+    expect(page.generationError, contains('primary unavailable'));
+  });
+
+  test('failover：备用通道也失败时错误向上传播', () async {
+    var requests = 0;
+    final dio = Dio()
+      ..interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) {
+            requests++;
+            handler.reject(
+              DioException(
+                requestOptions: options,
+                message: 'channel down',
+              ),
+            );
+          },
+        ),
+      );
+    final page = BookPageItem(pageIndex: 0, text: '小鹿走进森林', characterIds: []);
+    final settings = AppSettings(
+      imageType: 'gemini',
+      imageBaseUrl: 'https://example.test',
+      imageModel: 'gemini-image',
+      imageApiKey: 'test-key',
+      enableImageFallback: true,
+      fallbackImageType: 'openai',
+      fallbackImageBaseUrl: 'https://example.test/v1',
+      fallbackImageModel: 'dall-e-3',
+      fallbackImageApiKey: 'fallback-key',
+    );
+    await expectLater(
+      BookEngineService(dio: dio).generateIllustration(
+        settings: settings,
+        style: const BookStyle(
+          id: 'test',
+          name: 'test',
+          desc: '',
+          prefix: '水彩',
+          negative: '',
+        ),
+        page: page,
+      ),
+      throwsA(isA<Exception>()),
+    );
+    expect(requests, 2); // 主通道 + 备用通道各一次
+    expect(page.generationError, contains('channel down'));
   });
 }

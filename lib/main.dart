@@ -31,11 +31,8 @@ class BookBuddyApp extends StatelessWidget {
       title: 'BookBuddy 绘本工坊',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.dark,
-      theme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.light,
-        colorSchemeSeed: Colors.amber,
-      ),
+      // 应用只提供深色主题；早期随 MaterialApp 附带的浅色 theme 无任何引用，
+      // 已作为死代码移除（themeMode 固定 dark，永远不会走到浅色分支）。
       darkTheme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
@@ -269,7 +266,7 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '已导出《${book.title}』（${(bytes / 1024 / 1024).toStringAsFixed(1)} MB）',
+              '已导出《${book.title}》（${(bytes / 1024 / 1024).toStringAsFixed(1)} MB）',
             ),
           ),
         );
@@ -294,10 +291,20 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
           fileNameOverrides: ['$safeTitle.bb'],
         ),
       );
-      if (mounted && result.status == ShareResultStatus.success) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('已导出《${book.title}』')));
+      if (mounted) {
+        if (result.status == ShareResultStatus.success) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('已导出《${book.title}》')));
+        } else {
+          // 分享面板被划掉/失败时用户没有任何反馈，补一条提示。
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('分享已取消，未完成导出'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -332,8 +339,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
             SnackBar(
               content: Text(
                 result.isDuplicateCopy
-                    ? '已导入副本《${result.book.title}』'
-                    : '已导入《${result.book.title}』',
+                    ? '已导入副本《${result.book.title}》'
+                    : '已导入《${result.book.title}》',
               ),
             ),
           );

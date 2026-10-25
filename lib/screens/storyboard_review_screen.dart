@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
@@ -45,6 +46,17 @@ class StoryboardReviewScreen extends StatefulWidget {
 
   @override
   State<StoryboardReviewScreen> createState() => _StoryboardReviewScreenState();
+}
+
+/// 参考图 base64 解码失败时返回空字节而非抛出：损坏数据（旧版本绘本、
+/// 导入数据里的脏值）交给 Image 的 errorBuilder 显示破图占位，
+/// 避免在 build 阶段抛 FormatException 导致整屏构建失败。
+Uint8List _decodeBase64OrEmpty(String base64) {
+  try {
+    return base64Decode(base64);
+  } catch (_) {
+    return Uint8List(0);
+  }
 }
 
 class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
@@ -737,15 +749,20 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
                   : null,
               characters: _characters,
             );
-            page.imageBase64 = b64;
-            page.generationError = null;
-            // 锁定第一页成功生成的角色图作为全书的主角参考基准图
-            if (_characters.isEmpty &&
-                _protagonistRef == null &&
-                b64 != null &&
-                b64.isNotEmpty) {
-              _protagonistRef = b64;
-              currentBook.protagonistRefImage = b64;
+            if (b64 != null && b64.isNotEmpty) {
+              page.imageBase64 = b64;
+              page.generationError = null;
+              // 锁定第一页成功生成的角色图作为全书的主角参考基准图
+              if (_characters.isEmpty && _protagonistRef == null) {
+                _protagonistRef = b64;
+                currentBook.protagonistRefImage = b64;
+              }
+            } else {
+              // 主/备通道都未产出图片且未抛异常：保留引擎已写入的
+              // generationError（如「生图接口未返回图片数据」），不能抹成
+              // null——否则该页既无图也无错误原因，被当成成功空页跳过。
+              page.isPlaceholder = true;
+              page.generationError ??= '生图接口未返回图片数据';
             }
           } catch (e) {
             page.isPlaceholder = true;
@@ -981,7 +998,7 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
                                                   size: 42,
                                                 )
                                               : Image.memory(
-                                                  base64Decode(
+                                                  _decodeBase64OrEmpty(
                                                     character
                                                         .referenceImageBase64!,
                                                   ),

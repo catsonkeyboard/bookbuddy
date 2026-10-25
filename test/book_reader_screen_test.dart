@@ -211,4 +211,94 @@ void main() {
     expect(find.text('第三页', skipOffstage: false), findsNothing);
     await closeReader(tester);
   });
+
+  testWidgets('空 pages 绘本渲染「绘本数据损坏」占位而不是崩溃', (tester) async {
+    final book = PictureBook(
+      id: 'book-empty-pages',
+      title: '空绘本',
+      styleId: 'watercolor',
+      styleName: '水彩童话',
+      createdAt: DateTime.utc(2026, 10, 2),
+      pages: const [],
+    );
+    await pumpReader(tester, book);
+
+    expect(find.text('绘本数据损坏'), findsOneWidget);
+    expect(find.textContaining('《空绘本》没有任何页面内容'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await closeReader(tester);
+  });
+
+  group('全屏预览', () {
+    Future<void> enterFullscreen(WidgetTester tester) async {
+      await tester.tap(find.byTooltip('全屏预览绘本'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('进入后隐藏顶栏与正文，插画铺满屏幕，控制条默认隐藏', (tester) async {
+      await pumpReader(tester, threePageBook());
+
+      expect(find.byTooltip('全屏预览绘本'), findsOneWidget);
+      await enterFullscreen(tester);
+
+      // 顶栏（连读开关等功能按钮）与正文区全部隐藏，界面被全屏插画取代。
+      expect(find.byType(AppBar), findsNothing);
+      expect(find.text('连读关'), findsNothing);
+      expect(find.text('第一页'), findsNothing);
+      // 全屏插画以 contain 布局铺满屏幕。
+      final images = tester.widgetList<Image>(find.byType(Image));
+      expect(images.any((i) => i.fit == BoxFit.contain), isTrue);
+      // 控制条默认隐藏，避免干扰看图。
+      expect(find.byTooltip('退出全屏预览'), findsNothing);
+      await closeReader(tester);
+    });
+
+    testWidgets('点按画面切换控制条显隐，控制条带页码', (tester) async {
+      await pumpReader(tester, threePageBook());
+      await enterFullscreen(tester);
+
+      await tester.tap(find.byType(PageView));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('退出全屏预览'), findsOneWidget);
+      expect(find.text('1 / 3'), findsOneWidget);
+
+      await tester.tap(find.byType(PageView));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('退出全屏预览'), findsNothing);
+      await closeReader(tester);
+    });
+
+    testWidgets('全屏中翻页后退出，阅读器停在同一页并恢复顶栏与正文', (tester) async {
+      await pumpReader(tester, threePageBook());
+      await enterFullscreen(tester);
+
+      await tester.fling(find.byType(PageView), const Offset(-400, 0), 1000);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(PageView));
+      await tester.pumpAndSettle();
+      expect(find.text('2 / 3'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('退出全屏预览'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AppBar), findsOneWidget);
+      expect(find.text('连读关'), findsOneWidget);
+      expect(find.text('第二页'), findsOneWidget);
+      expect(find.text('第一页'), findsNothing);
+      await closeReader(tester);
+    });
+
+    testWidgets('全屏预览时系统返回键先退出预览而不是离开阅读器', (tester) async {
+      await pumpReader(tester, threePageBook());
+      await enterFullscreen(tester);
+
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      // 第一次返回只退出全屏，阅读器本体还在当前页。
+      expect(find.byType(AppBar), findsOneWidget);
+      expect(find.text('第一页'), findsOneWidget);
+      expect(find.byTooltip('全屏预览绘本'), findsOneWidget);
+      await closeReader(tester);
+    });
+  });
 }

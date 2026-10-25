@@ -25,12 +25,14 @@ class LlmProfile {
       };
 
   factory LlmProfile.fromJson(Map<String, dynamic> json) => LlmProfile(
-        id: json['id'] ?? '',
-        name: json['name'] ?? '未命名LLM配置',
-        providerType: json['providerType'] ?? 'gemini',
-        baseUrl: json['baseUrl'] ?? '',
-        apiKey: json['apiKey'] ?? '',
-        model: json['model'] ?? '',
+        // 单字段脏值（数字、布尔等）不能把整个 fromJson 拖进 catch 回落默认值，
+        // 全部按 toString() 容错读取。
+        id: json['id']?.toString() ?? '',
+        name: json['name']?.toString() ?? '未命名LLM配置',
+        providerType: json['providerType']?.toString() ?? 'gemini',
+        baseUrl: json['baseUrl']?.toString() ?? '',
+        apiKey: json['apiKey']?.toString() ?? '',
+        model: json['model']?.toString() ?? '',
       );
 
   LlmProfile copyWith({
@@ -79,12 +81,13 @@ class ImageProfile {
       };
 
   factory ImageProfile.fromJson(Map<String, dynamic> json) => ImageProfile(
-        id: json['id'] ?? '',
-        name: json['name'] ?? '未命名生图配置',
-        providerType: json['providerType'] ?? 'gemini',
-        baseUrl: json['baseUrl'] ?? '',
-        apiKey: json['apiKey'] ?? '',
-        model: json['model'] ?? '',
+        // 同 LlmProfile.fromJson：全字段 toString() 容错，单字段脏值不拖垮整体。
+        id: json['id']?.toString() ?? '',
+        name: json['name']?.toString() ?? '未命名生图配置',
+        providerType: json['providerType']?.toString() ?? 'gemini',
+        baseUrl: json['baseUrl']?.toString() ?? '',
+        apiKey: json['apiKey']?.toString() ?? '',
+        model: json['model']?.toString() ?? '',
       );
 
   ImageProfile copyWith({
@@ -463,10 +466,10 @@ class AppSettings {
 
     // 若从旧版本数据恢复且没有 profiles 列表，则将顶层旧字段填充到第一个激活的默认配置中
     if (loadedLlmProfiles == null || loadedLlmProfiles.isEmpty) {
-      final oldType = json['llmType'] as String?;
-      final oldUrl = json['llmBaseUrl'] as String?;
-      final oldKey = json['llmApiKey'] as String?;
-      final oldModel = json['llmModel'] as String?;
+      final oldType = json['llmType']?.toString();
+      final oldUrl = json['llmBaseUrl']?.toString();
+      final oldKey = json['llmApiKey']?.toString();
+      final oldModel = json['llmModel']?.toString();
       loadedLlmProfiles = _createDefaultLlmProfiles(
         initialType: oldType,
         initialBaseUrl: oldUrl,
@@ -476,10 +479,10 @@ class AppSettings {
     }
 
     if (loadedImageProfiles == null || loadedImageProfiles.isEmpty) {
-      final oldImgType = json['imageType'] as String?;
-      final oldImgUrl = json['imageBaseUrl'] as String?;
-      final oldImgKey = json['imageApiKey'] as String?;
-      final oldImgModel = json['imageModel'] as String?;
+      final oldImgType = json['imageType']?.toString();
+      final oldImgUrl = json['imageBaseUrl']?.toString();
+      final oldImgKey = json['imageApiKey']?.toString();
+      final oldImgModel = json['imageModel']?.toString();
       loadedImageProfiles = _createDefaultImageProfiles(
         initialType: oldImgType,
         initialBaseUrl: oldImgUrl,
@@ -488,23 +491,35 @@ class AppSettings {
       );
     }
 
+    // minimaxSpeed 容忍数字与可解析字符串，脏值回落默认 0.85；再夹到设置页
+    // 滑块的 [0.7, 1.2] 区间（该区间同时落在 MiniMax 合法域 0.5-2.0 内）——
+    // 存储值一旦越界，轻则 Slider 的 min/max 断言红屏，重则合成请求 400。
+    final rawSpeed = json['minimaxSpeed'];
+    final parsedSpeed = rawSpeed is num
+        ? rawSpeed.toDouble()
+        : double.tryParse(rawSpeed?.toString() ?? '') ?? 0.85;
+    final minimaxSpeed = parsedSpeed.clamp(0.7, 1.2);
+
     return AppSettings(
       llmProfiles: loadedLlmProfiles,
-      activeLlmProfileId: json['activeLlmProfileId'],
+      activeLlmProfileId: json['activeLlmProfileId']?.toString(),
       imageProfiles: loadedImageProfiles,
-      activeImageProfileId: json['activeImageProfileId'],
-      enableImageFallback: json['enableImageFallback'] ?? false,
-      fallbackImageType: json['fallbackImageType'] ?? 'openai',
-      fallbackImageBaseUrl: json['fallbackImageBaseUrl'] ?? 'https://api.openai.com/v1',
-      fallbackImageApiKey: json['fallbackImageApiKey'] ?? '',
-      fallbackImageModel: json['fallbackImageModel'] ?? 'dall-e-3',
-      ttsEnabled: json['ttsEnabled'] ?? true,
-      ttsProvider: json['ttsProvider'] ?? 'minimax',
-      minimaxApiKey: json['minimaxApiKey'] ?? '',
-      minimaxGroupId: json['minimaxGroupId'] ?? '',
-      minimaxModel: json['minimaxModel'] ?? 'speech-01-turbo',
-      minimaxVoiceId: json['minimaxVoiceId'] ?? 'audiobook_female_1',
-      minimaxSpeed: (json['minimaxSpeed'] as num?)?.toDouble() ?? 0.85,
+      activeImageProfileId: json['activeImageProfileId']?.toString(),
+      // 布尔字段按 == true / != false 读取：缺键回落默认值，脏值（字符串等）
+      // 不会抛 TypeError，只会按默认值处理。
+      enableImageFallback: json['enableImageFallback'] == true,
+      fallbackImageType: json['fallbackImageType']?.toString() ?? 'openai',
+      fallbackImageBaseUrl:
+          json['fallbackImageBaseUrl']?.toString() ?? 'https://api.openai.com/v1',
+      fallbackImageApiKey: json['fallbackImageApiKey']?.toString() ?? '',
+      fallbackImageModel: json['fallbackImageModel']?.toString() ?? 'dall-e-3',
+      ttsEnabled: json['ttsEnabled'] != false,
+      ttsProvider: json['ttsProvider']?.toString() ?? 'minimax',
+      minimaxApiKey: json['minimaxApiKey']?.toString() ?? '',
+      minimaxGroupId: json['minimaxGroupId']?.toString() ?? '',
+      minimaxModel: json['minimaxModel']?.toString() ?? 'speech-01-turbo',
+      minimaxVoiceId: json['minimaxVoiceId']?.toString() ?? 'audiobook_female_1',
+      minimaxSpeed: minimaxSpeed,
     );
   }
 }

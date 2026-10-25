@@ -10,8 +10,10 @@ import 'package:bookbuddy/services/photo_picker_service.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:image_picker/image_picker.dart';
 
 import 'support/run_io.dart';
 
@@ -624,4 +626,54 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     expect(PhotoPickerService().supportsCamera, isTrue);
   });
+
+  test('取图权限被拒绝时抛出具可操作文案的异常', () async {
+    for (final code in const [
+      'photo_access_denied',
+      'camera_access_denied',
+      'no_available_camera',
+    ]) {
+      final picker = PhotoPickerService(picker: _DenyingImagePicker(code));
+      await expectLater(
+        picker.pick(PhotoSource.gallery),
+        throwsA(
+          isA<Exception>().having(
+            (e) => e.toString(),
+            '文案',
+            allOf(contains('权限'), contains('系统设置')),
+          ),
+        ),
+      );
+      await expectLater(
+        picker.pick(PhotoSource.camera),
+        throwsA(
+          isA<Exception>().having((e) => e.toString(), '文案', contains('相机权限被拒绝')),
+        ),
+      );
+    }
+  });
+
+  test('非权限类 PlatformException 仍按用户取消返回 null', () async {
+    final picker = PhotoPickerService(picker: _DenyingImagePicker('no_valid_image_uri'));
+    expect(await picker.pick(PhotoSource.gallery), isNull);
+  });
+}
+
+/// 模拟 image_picker 在 pickImage 时抛出 PlatformException 的注入实现。
+class _DenyingImagePicker extends ImagePicker {
+  _DenyingImagePicker(this.code);
+
+  final String code;
+
+  @override
+  Future<XFile?> pickImage({
+    required ImageSource source,
+    double? maxWidth,
+    double? maxHeight,
+    int? imageQuality,
+    CameraDevice preferredCameraDevice = CameraDevice.rear,
+    bool requestFullMetadata = true,
+  }) async {
+    throw PlatformException(code: code, message: 'denied by system');
+  }
 }

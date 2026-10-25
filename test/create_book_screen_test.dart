@@ -30,7 +30,13 @@ Future<void> runIo(
     await tester.pump();
     if (until != null && until()) break;
   }
-  await tester.pumpAndSettle();
+  // 结尾不能用 pumpAndSettle：until 命中时界面上常还挂着生成中的
+  // CircularProgressIndicator 之类无限动画，pumpAndSettle 必然超时。
+  // 固定泵约 2 秒模拟时间，足够完成对话框 / SnackBar / 转场动画；
+  // 需要完全稳定的调用方自行再调 pumpAndSettle。
+  for (var i = 0; i < 20; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
 }
 
 CharacterCard card(String id, String name, {Map<String, String>? anchors}) =>
@@ -277,9 +283,9 @@ void main() {
       expect(find.textContaining('「豆豆」还没有「水彩童话」画风的定妆照'), findsOneWidget);
       expect(find.textContaining('「豆豆」已有的画风：3D黏土定格'), findsOneWidget);
 
-      await tester.tap(find.text('取消'));
-      await tester.pumpAndSettle();
-      await runIo(tester, () async {}, maxRounds: 5);
+      // 取消按钮的 onPressed 在 fake zone 触发 pop，但 _startGenerate 挂在
+      // showDialog 上的续体排在真实事件循环，必须先让出真实时间片再等界面稳定。
+      await runIo(tester, () => tester.tap(find.text('取消')));
 
       expect(llmSent, isEmpty);
       expect(imageSent, isEmpty);

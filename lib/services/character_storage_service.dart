@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/character_card.dart';
@@ -61,17 +62,24 @@ class CharacterStorageService {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is! List) return null;
-      return decoded
-          .whereType<Map>()
-          .map((m) => CharacterCard.fromJson(Map<String, dynamic>.from(m)))
-          .where((c) => isValidId(c.id))
-          .toList();
+      // 按 id 去重：cards.json 被外部改坏出现重复 id 时保留最后一条，
+      // 避免同一张卡在列表里出现多次、后续保存又写回重复项。
+      final byId = <String, CharacterCard>{};
+      for (final m in decoded.whereType<Map>()) {
+        final card = CharacterCard.fromJson(Map<String, dynamic>.from(m));
+        if (!isValidId(card.id)) continue;
+        byId[card.id] = card;
+      }
+      return byId.values.toList();
     } catch (_) {
       return null;
     }
   }
 
-  Future<List<CharacterCard>> _readAll() async {
+  /// 读取全部卡片。文件都不存在时返回空列表（全新角色库）；
+  /// 文件存在但主备都解析不了时返回 null（库损坏）——调用方必须拒绝
+  /// 在 null 之上做任何读改写，否则一次保存就会把整库元数据清空。
+  Future<List<CharacterCard>?> _readAll() async {
     final file = await _cardsFile();
     final backup = File('${file.path}.bak');
     for (final candidate in [file, backup]) {
@@ -80,12 +88,14 @@ class CharacterStorageService {
         if (cards != null) return cards;
       }
     }
+    if (await file.exists() || await backup.exists()) return null;
     return [];
   }
 
-  /// 按最近使用时间（没有则按创建时间）倒序。
+  /// 按最近使用时间（没有则按创建时间）倒序。库损坏时按空库展示
+  ///（不抛错打断界面），但任何写操作都会被 [_mutate] 拒绝。
   Future<List<CharacterCard>> loadCards() async {
-    final cards = await _readAll();
+    final cards = await _readAll() ?? [];
     cards.sort(
       (a, b) => (b.lastUsedAt ?? b.createdAt)
           .compareTo(a.lastUsedAt ?? a.createdAt),
@@ -111,9 +121,39 @@ class CharacterStorageService {
     if (!isValidId(id)) {
       throw ArgumentError('Card id is not a valid directory name: $id');
     }
+    // 先取这张卡关联的图片路径：元数据删除后就无法反查了。
+    CharacterCard? target;
+    for (final c in await _readAll() ?? const <CharacterCard>[]) {
+      if (c.id == id) target = c;
+    }
     await _mutate((cards) => cards.removeWhere((c) => c.id == id));
+    // 展示过的缩略图/定妆照可能还在图片缓存里，先清掉再删目录，
+    // 给引擎释放文件句柄的机会（Windows 上句柄未释放时删除会失败）。
+    if (target != null) {
+      final paths = [...target.anchorImagePaths.values];
+      final photo = target.photoPath;
+      if (photo != null) paths.add(photo);
+      final root = (await _root()).path;
+      for (final p in paths) {
+        if (!isSafeRelativePath(p)) continue;
+        try {
+          await FileImage(File('$root/$p')).evict();
+        } catch (_) {}
+      }
+    }
     final dir = Directory('${(await _root()).path}/$id');
-    if (await dir.exists()) await dir.delete(recursive: true);
+    if (!await dir.exists()) return;
+    try {
+      await dir.delete(recursive: true);
+    } on FileSystemException {
+      // Windows 上引擎可能仍持有图片文件句柄，删除目录失败。此时元数据已删、
+      // 卡片已从列表消失，残留的图片目录无害；不抛错，避免界面出现
+      // 「卡片已删除却提示删除失败」的矛盾。等句柄释放后由后续删除/系统清理。
+      try {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        await dir.delete(recursive: true);
+      } catch (_) {}
+    }
   }
 
   /// 写入卡片目录下的图片文件，返回相对角色库根目录的路径。
@@ -127,7 +167,21 @@ class CharacterStorageService {
     }
     final dir = Directory('${(await _root()).path}/$cardId');
     if (!await dir.exists()) await dir.create(recursive: true);
-    await File('${dir.path}/$fileName').writeAsBytes(bytes, flush: true);
+    // tmp + rename 原子写：崩溃时不会留下写了一半的图片，旧文件保持完好。
+    final target = File('${dir.path}/$fileName');
+    final temp = File('${target.path}.tmp');
+    await temp.writeAsBytes(bytes, flush: true);
+    try {
+      await temp.rename(target.path);
+    } catch (_) {
+      // Windows 上目标被占用时 rename 可能失败，退回直接覆盖写。
+      await target.writeAsBytes(bytes, flush: true);
+    } finally {
+      // 清理自身不能再抛：temp 被占用时抛错会顶替真正的失败原因。
+      try {
+        if (await temp.exists()) await temp.delete();
+      } catch (_) {}
+    }
     return '$cardId/$fileName';
   }
 
@@ -169,7 +223,9 @@ class CharacterStorageService {
       }
       final relative = await writeImage(cardId, 'anchor_$styleId.$ext', bytes);
       final old = cards[index].anchorImagePaths[styleId];
-      if (old != null && old != relative) {
+      // 只删角色库目录内的安全相对路径；穿越路径（历史脏数据）直接跳过，
+      // 否则一个 `../../x` 就能删到库外文件。
+      if (old != null && old != relative && isSafeRelativePath(old)) {
         try {
           final oldFile = File('${root.path}/$old');
           if (oldFile.existsSync()) oldFile.deleteSync();
@@ -191,6 +247,8 @@ class CharacterStorageService {
       final index = cards.indexWhere((c) => c.id == cardId);
       if (index < 0) return;
       for (final path in cards[index].anchorImagePaths.values) {
+        // 与 saveAnchor 同口径：非安全相对路径（脏数据）不碰，防止越权删除。
+        if (!isSafeRelativePath(path)) continue;
         final file = File('${root.path}/$path');
         if (file.existsSync()) file.deleteSync();
       }
@@ -255,6 +313,12 @@ class CharacterStorageService {
         }
       }
       final cards = await _readAll();
+      if (cards == null) {
+        throw StateError(
+          '角色库元数据（cards.json）与备份均无法解析，已停止写入以保护数据；'
+          '请检查 bookbuddy_characters 目录下的 .corrupt 文件手动恢复',
+        );
+      }
       await change(cards);
       await _writeAll(cards);
     }();
@@ -298,7 +362,10 @@ class CharacterStorageService {
       }
       rethrow;
     } finally {
-      if (await temp.exists()) await temp.delete();
+      // 清理自身不能再抛：temp 被占用时抛错会顶替真正的失败原因。
+      try {
+        if (await temp.exists()) await temp.delete();
+      } catch (_) {}
     }
   }
 }

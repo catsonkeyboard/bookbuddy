@@ -72,12 +72,39 @@ class _ImageReference {
   const _ImageReference(this.name, this.base64, {this.isPhoto = false});
 }
 
+/// 上游内容安全拦截（提示词或画面触发过滤）。
+/// 这类错误不是瞬时故障：重试或降级到备用通道通常仍会被拦截，
+/// 必须直接抛给用户去微调提示词，因此不参与 failover 降级。
+class ContentBlockedException implements Exception {
+  final String message;
+  const ContentBlockedException(this.message);
+
+  @override
+  String toString() => message;
+}
+
 class BookEngineService {
   final Dio _dio;
 
   /// 真实照片作参考图时附在说明里的要求（三条生图分支共用）。
   static const _photoGuidance =
       '请按照片中的外形、颜色、材质和标志性细节绘制这个角色，并转换为当前绘本画风；忽略照片的背景、光线和拍摄角度。';
+
+  /// 上游生图/文本响应里表示内容安全拦截的 finishReason 集合。
+  static const _blockReasons = {
+    'PROHIBITED_CONTENT',
+    'IMAGE_SAFETY',
+    'IMAGE_PROHIBITED_CONTENT',
+    'SAFETY',
+    'RECITATION',
+  };
+
+  /// 大模型实时响应形状防护：字段类型不守承诺时退回安全默认值，避免 TypeError/NoSuchMethodError。
+  static List<dynamic> _asList(dynamic v) => v is List ? v : const [];
+
+  static Map<dynamic, dynamic> _asMap(dynamic v) => v is Map ? v : const {};
+
+  static String _asStr(dynamic v) => v?.toString() ?? '';
 
   BookEngineService({Dio? dio})
     : _dio =
@@ -86,6 +113,8 @@ class BookEngineService {
             BaseOptions(
               connectTimeout: const Duration(seconds: 45),
               receiveTimeout: const Duration(seconds: 90),
+              // 分镜 JSON 较长，发送超时单独放宽，避免上传大 prompt 时被默认 60s 掐断。
+              sendTimeout: const Duration(seconds: 120),
             ),
           );
 
@@ -347,9 +376,9 @@ $storyText
     );
 
     final parsed = _extractJson(rawJson);
-    final rawCharacters = parsed is Map
-        ? (parsed['characters'] as List? ?? [])
-        : [];
+    // 大模型可能不守 JSON 形状约定：parsed 本身或各字段都可能是任意类型，统一用助手退回默认值。
+    final parsedMap = _asMap(parsed);
+    final rawCharacters = _asList(parsedMap['characters']);
     final characters = <BookCharacter>[];
     for (final entry in rawCharacters) {
       if (entry is! Map) continue;
@@ -373,9 +402,9 @@ $storyText
         ),
       );
     }
-    final rawList = parsed is Map
-        ? (parsed['scenes'] as List? ?? [])
-        : (parsed is List ? parsed : []);
+    final List<dynamic> rawList = parsed is List
+        ? parsed
+        : _asList(parsedMap['scenes']);
     final groups = <String, List<String>>{};
     if (parsed is Map && parsed['groups'] is Map) {
       for (final group in (parsed['groups'] as Map).entries) {
@@ -390,12 +419,12 @@ $storyText
     for (int i = 0; i < rawList.length; i++) {
       final s = rawList[i];
       if (s is Map) {
-        final ids = (s['characterIds'] as List? ?? [])
+        final ids = _asList(s['characterIds'])
             .map((id) => id.toString())
             .where((id) => characters.any((c) => c.id == id))
             .toSet();
         final visualDescription =
-            '${s['action'] ?? ''} ${s['emotion'] ?? ''} ${s['composition'] ?? ''}';
+            '${_asStr(s['action'])} ${_asStr(s['emotion'])} ${_asStr(s['composition'])}';
         ids.addAll(
           characters
               .where((c) => visualDescription.contains(c.name))
@@ -414,7 +443,7 @@ $storyText
           ids.addAll(animals.map((c) => c.id));
         }
         final outfits =
-            (s['outfitOverrides'] as Map? ?? {}).map(
+            _asMap(s['outfitOverrides']).map(
               (key, value) => MapEntry(key.toString(), value.toString()),
             )..removeWhere(
               (id, value) => !ids.contains(id) || value.trim().isEmpty,
@@ -422,10 +451,10 @@ $storyText
         pages.add(
           BookPageItem(
             pageIndex: i,
-            text: s['text'] ?? '',
-            sceneAction: s['action'] ?? '',
-            sceneEmotion: s['emotion'] ?? '',
-            sceneComposition: s['composition'] ?? '',
+            text: _asStr(s['text']),
+            sceneAction: _asStr(s['action']),
+            sceneEmotion: _asStr(s['emotion']),
+            sceneComposition: _asStr(s['composition']),
             characterIds: ids.toList(),
             outfitOverrides: outfits,
           ),
@@ -534,8 +563,9 @@ $numbered
       }
 
       // 规则三：没有任何页面列出它时，按名字扫描页面文字补入。
+      // 单字名字（如「猫」）会误中「天空」等无关文本，长度不足 2 时跳过子串匹配。
       if (!pages.any((page) => page.characterIds.contains(card.id)) &&
-          name.isNotEmpty) {
+          name.length >= 2) {
         for (final page in pages) {
           final visual =
               '${page.text} ${page.sceneAction} ${page.sceneEmotion} ${page.sceneComposition}';
@@ -619,7 +649,9 @@ $numbered
     if (characters.isEmpty) return null; // 旧绘本仍使用原有参考图结构。
     final description = '${page.sceneAction} ${page.sceneComposition}';
     for (final character in characters) {
-      if (description.contains(character.name) &&
+      // 单字名字（如「猫」）会误中「天空」等无关文本，长度不足 2 时不做子串匹配。
+      if (character.name.length >= 2 &&
+          description.contains(character.name) &&
           !page.characterIds.contains(character.id)) {
         return '画面提到${character.name}，但出场名单中没有该角色';
       }
@@ -694,6 +726,8 @@ $numbered
       references: [
         if (photo != null) _ImageReference(character.name, photo, isPhoto: true),
       ],
+      // 按角色派生稳定 session：同一角色的定妆照请求落在同一上游会话。
+      sessionKey: 'character-${character.id}',
     );
   }
 
@@ -718,6 +752,22 @@ $numbered
       '没穿衣物': '身着特制透明礼服',
       '光着身子': '身着特制透明礼服',
       '光着身体': '身着特制透明礼服',
+      // 高频变体补充（长词优先，避免短词先替换破坏长词匹配）。
+      '衣不蔽体': '穿着得体',
+      '双膝着地': '蹲在地上',
+      '赤裸裸': '穿戴整齐',
+      '赤裸': '穿戴整齐',
+      '裸体': '穿戴整齐',
+      '裸露': '穿戴整齐',
+      '没穿衣': '穿着得体',
+      '脱衣服': '整理衣裳',
+      '跪着': '蹲在地上',
+      '下跪': '弯下腰',
+      '霸凌': '友善相处',
+      '欺凌': '友善相处',
+      '虐待': '细心照顾',
+      '自残': '安静休息',
+      '血腥': '柔和画面',
     };
     replacements.forEach((key, val) {
       p = p.replaceAll(key, val);
@@ -813,9 +863,16 @@ $numbered
         return b64;
       }
     } catch (e) {
-      // 主通道失败，检查是否有备用通道
+      // 内容安全拦截不是瞬时故障：换通道通常同样被拦截，直接抛给用户调整提示词。
+      if (_isContentBlocked(e)) {
+        page.generationError = e.toString();
+        rethrow;
+      }
+      // 仅网络错误 / 5xx / 429 / 401 这类「换个通道可能就好」的失败才降级；
+      // 400/402 等明确业务错误（参数非法、余额不足、敏感词）降级也大概率复现，直接抛出。
       if (!settings.enableImageFallback ||
-          settings.fallbackImageApiKey.isEmpty) {
+          settings.fallbackImageApiKey.isEmpty ||
+          !_shouldFailover(e)) {
         page.generationError = e.toString();
         rethrow;
       }
@@ -869,7 +926,34 @@ $numbered
       }
     }
 
+    // 主通道与备用通道都未产出图片：落盘原因，避免界面把「没返回」显示成成功空页。
+    page.generationError = '生图接口未返回图片数据';
     return null;
+  }
+
+  /// 内容安全类异常（安全拦截 / 审核过滤）：降级无意义，直接抛给用户。
+  bool _isContentBlocked(Object e) {
+    if (e is ContentBlockedException) return true;
+    final msg = e.toString();
+    return msg.contains('内容安全过滤') ||
+        msg.contains('安全策略拦截') ||
+        msg.contains('安全风控') ||
+        msg.contains('PROHIBITED_CONTENT');
+  }
+
+  /// 判断主通道错误是否值得降级到备用通道：
+  /// 仅网络层失败（无响应）、5xx、429（限流）、401（密钥无效）才降级——
+  /// 这些换个通道/密钥就可能恢复；400/402/404 等明确业务错误与响应形状类
+  /// 异常降级也大概率复现，直接抛出让用户看到真实原因。
+  bool _shouldFailover(Object e) {
+    if (e is DioException) {
+      final status = e.response?.statusCode;
+      if (status == null) return true; // 连接失败 / 超时等网络层错误
+      return status >= 500 || status == 429 || status == 401;
+    }
+    // 非 DioException：_callImageApi 已把部分业务错误转成 Exception，只认 429/401 文案。
+    final msg = e.toString();
+    return msg.contains('(429/402)') || msg.contains('(401)');
   }
 
   Future<String> _callLlm({
@@ -911,16 +995,19 @@ $numbered
           'generationConfig': {'temperature': temperature ?? 0.3},
         },
       );
-      final cands = resp.data['candidates'] as List? ?? [];
+      if (resp.data is! Map) {
+        throw Exception('Gemini 返回了无法解析的响应');
+      }
+      final cands = _asList(resp.data['candidates']);
       if (cands.isEmpty) throw Exception('Gemini 未返回内容');
-      // 安全拦截 / 截断时 content 可能为 null，直接取 ['parts'] 会抛 NoSuchMethodError。
-      final cand = cands[0] as Map? ?? {};
+      // 安全拦截 / 截断时 content 可能为 null，candidates 元素也可能不是 Map。
+      final cand = _asMap(cands.first);
       final finishReason = cand['finishReason'];
       if (finishReason != null && finishReason != 'STOP') {
         throw Exception('Gemini 响应被中断，原因: $finishReason');
       }
-      final parts = cand['content']?['parts'] as List? ?? [];
-      return parts.map((p) => p['text'] ?? '').join();
+      final parts = _asList(_asMap(cand['content'])['parts']);
+      return parts.whereType<Map>().map((p) => _asStr(p['text'])).join();
     } else if (settings.llmType == 'anthropic') {
       final base = settings.llmBaseUrl.endsWith('/')
           ? settings.llmBaseUrl.substring(0, settings.llmBaseUrl.length - 1)
@@ -937,7 +1024,7 @@ $numbered
         ),
         data: {
           'model': settings.llmModel,
-          'max_tokens': 4096,
+          'max_tokens': 8192,
           'temperature': ?temperature,
           'system': systemPrompt,
           'messages': [
@@ -961,18 +1048,29 @@ $numbered
           ],
         },
       );
-      final content = resp.data['content'] as List? ?? [];
+      if (resp.data is! Map) {
+        throw Exception('Claude 返回了无法解析的响应');
+      }
+      final content = _asList(resp.data['content']);
       if (content.isEmpty) throw Exception('Anthropic Claude 接口未返回内容');
+      // stop_reason 为 max_tokens 说明输出被长度上限截断，JSON 大概率不完整，
+      // 明确提示用户，而不是让下游解析报难以看懂的格式错误。
+      if (_asStr(resp.data['stop_reason']) == 'max_tokens') {
+        throw Exception('Claude 输出达到长度上限被截断，请改短故事或减少分镜幕数后重试');
+      }
       final textParts = content
+          .whereType<Map>()
           .where((c) => c['type'] == 'text')
-          .map((c) => c['text'] ?? '')
+          .map((c) => _asStr(c['text']))
           .toList();
       return textParts.join();
     } else {
       // OpenAI 兼容协议
-      final base = settings.llmBaseUrl.endsWith('/v1')
-          ? settings.llmBaseUrl
-          : '${settings.llmBaseUrl}/v1';
+      // 尾斜杠会把 '/v1/' 误判成未带版本号，先去尾斜杠再判断。
+      final trimmedBase = settings.llmBaseUrl.replaceAll(RegExp(r'/+$'), '');
+      final base = trimmedBase.endsWith('/v1')
+          ? trimmedBase
+          : '$trimmedBase/v1';
       final resp = await _dio.post(
         '$base/chat/completions',
         options: Options(
@@ -1002,9 +1100,20 @@ $numbered
           ],
         },
       );
-      final choices = resp.data['choices'] as List? ?? [];
+      if (resp.data is! Map) {
+        throw Exception('上游接口返回了无法解析的响应');
+      }
+      final choices = _asList(resp.data['choices']);
       if (choices.isEmpty) throw Exception('OpenAI 接口未返回内容');
-      return choices[0]['message']['content'] ?? '';
+      final firstChoice = choices.first;
+      if (firstChoice is! Map) {
+        throw Exception('OpenAI 接口返回了无法解析的选项');
+      }
+      final message = firstChoice['message'];
+      if (message is! Map) {
+        throw Exception('OpenAI 接口未返回消息内容');
+      }
+      return _asStr(message['content']);
     }
   }
 
@@ -1016,6 +1125,7 @@ $numbered
     required String prompt,
     required String negative,
     List<_ImageReference> references = const [],
+    String? sessionKey,
   }) async {
     // 自动判定或按协议走 腾讯 TokenHub 混元 3.5 生图接口
     final isTokenHub =
@@ -1037,7 +1147,12 @@ $numbered
         }
       }
 
-      final sessionId = 'bookbuddy-${DateTime.now().millisecondsSinceEpoch}';
+      // session 供上游按会话保持多轮上下文。能拿到稳定标识（角色/书）时派生固定值，
+      // 让同一角色/同一本书的跨页请求落在同一会话；拿不到时退化为时间戳，
+      // 每次请求都是新会话（语义风险：上游无法跨页记忆，一致性只靠参考图保证）。
+      final sessionId = sessionKey != null
+          ? 'bookbuddy-$sessionKey'
+          : 'bookbuddy-${DateTime.now().millisecondsSinceEpoch}';
       final List<Map<String, dynamic>> contentList = [
         {'type': 'text', 'text': prompt},
       ];
@@ -1063,6 +1178,8 @@ $numbered
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $apiKey',
           },
+          // 混元生图出图较慢，接收超时放宽到 180s。
+          receiveTimeout: const Duration(seconds: 180),
         ),
         data: {
           'model': model.isNotEmpty ? model : 'hy-image-v3.5-preview',
@@ -1077,7 +1194,12 @@ $numbered
       if (imgResult != null) {
         return imgResult;
       }
-      throw Exception('腾讯 TokenHub 接口已响应但未提取到有效图片数据: ${resp.data}');
+      // 上游无图时 resp.data 可能是超大 HTML/JSON，截断后再进异常，避免撑爆日志与弹窗。
+      final detail = resp.data?.toString() ?? '';
+      throw Exception(
+        '腾讯 TokenHub 接口已响应但未提取到有效图片数据: '
+        '${detail.length > 200 ? '${detail.substring(0, 200)}…' : detail}',
+      );
     }
 
     if (type == 'gemini') {
@@ -1091,6 +1213,7 @@ $numbered
               'Content-Type': 'application/json',
               'x-goog-api-key': apiKey,
             },
+            receiveTimeout: const Duration(seconds: 180),
           ),
           data: {
             'instances': [
@@ -1099,9 +1222,12 @@ $numbered
             'parameters': {'sampleCount': 1, 'aspectRatio': '16:9'},
           },
         );
-        final preds = resp.data['predictions'] as List? ?? [];
-        if (preds.isNotEmpty && preds[0]['bytesBase64Encoded'] != null) {
-          return preds[0]['bytesBase64Encoded'];
+        final preds =
+            resp.data is Map ? _asList(resp.data['predictions']) : const [];
+        final pred = preds.isNotEmpty ? _asMap(preds.first) : const {};
+        final encoded = pred['bytesBase64Encoded'];
+        if (encoded != null) {
+          return _cleanBase64(_asStr(encoded));
         }
       } else {
         // 多模态生图 generateContent (支持注入参考图锁定主角外貌)
@@ -1130,6 +1256,7 @@ $numbered
               'Content-Type': 'application/json',
               'x-goog-api-key': apiKey,
             },
+            receiveTimeout: const Duration(seconds: 180),
           ),
           data: {
             'contents': [
@@ -1162,24 +1289,33 @@ $numbered
             ],
           },
         );
-        final cands = resp.data['candidates'] as List? ?? [];
+        final cands =
+            resp.data is Map ? _asList(resp.data['candidates']) : const [];
         if (cands.isNotEmpty) {
-          final finishReason = cands[0]['finishReason'];
-          if (finishReason == 'PROHIBITED_CONTENT') {
-            throw Exception(
-              '提示词触发了上游 AI 服务商的内容安全过滤 (PROHIBITED_CONTENT)，请微调提示词规避敏感人物/动作',
+          final cand = _asMap(cands.first);
+          final finishReason = cand['finishReason']?.toString();
+          if (finishReason != null && _blockReasons.contains(finishReason)) {
+            throw ContentBlockedException(
+              '提示词或画面触发了上游内容安全过滤 ($finishReason)，请微调提示词规避敏感人物/动作',
             );
           }
-          final candParts = cands[0]['content']?['parts'] as List? ?? [];
-          for (var p in candParts) {
-            if (p['inlineData'] != null && p['inlineData']['data'] != null) {
-              return p['inlineData']['data'];
+          if (finishReason != null && finishReason != 'STOP') {
+            throw Exception('Gemini 生图被中断，原因: $finishReason');
+          }
+          final candParts = _asList(_asMap(cand['content'])['parts']);
+          for (final p in candParts.whereType<Map>()) {
+            final inline = p['inlineData'];
+            if (inline is Map && inline['data'] != null) {
+              return _cleanBase64(_asStr(inline['data']));
             }
           }
         }
-        final promptFeedback = resp.data['promptFeedback'];
-        if (promptFeedback != null && promptFeedback['blockReason'] != null) {
-          throw Exception('请求被上游安全策略拦截: ${promptFeedback['blockReason']}');
+        final promptFeedback =
+            resp.data is Map ? resp.data['promptFeedback'] : null;
+        if (promptFeedback is Map && promptFeedback['blockReason'] != null) {
+          throw ContentBlockedException(
+            '请求被上游安全策略拦截: ${promptFeedback['blockReason']}',
+          );
         }
       }
     } else {
@@ -1230,7 +1366,11 @@ $numbered
       try {
         final resp = await _dio.post(
           imgUrl,
-          options: Options(headers: headers),
+          options: Options(
+            headers: headers,
+            // 生图出图较慢，接收超时放宽到 180s。
+            receiveTimeout: const Duration(seconds: 180),
+          ),
           data: requestData,
         );
 
@@ -1241,13 +1381,16 @@ $numbered
         // 仅在明确为 404 (端点未找到) 或 405 (Method Not Allowed) 时，才降级尝试 /chat/completions
         if (code == 404 || code == 405) {
           // 继续尝试下游聊天降级
+        } else if (_shouldFailover(dioErr)) {
+          // 超时 / 连接失败 / 5xx / 429 / 401：DioException 原样抛出，让
+          // generateIllustration 的故障转移凭状态码切换备用通道。这里若包成
+          // 普通 Exception 会丢失状态码，这些错误就再也不降级了。
+          rethrow;
         } else {
-          // 400 (敏感词过滤/参数非法)、401 (Key无效)、402 (余额不足)、429 (限流) 均为明确业务错误，提取后明确抛出！
-          final errorMsg = _extractErrorMessage(dioErr);
-          throw Exception(errorMsg);
+          // 400 (敏感词过滤/参数非法)、402 (余额不足) 等明确业务错误，提取文案后抛出，
+          // 换通道大概率复现，直接让用户看到真实原因。
+          throw Exception(_extractErrorMessage(dioErr));
         }
-      } catch (e) {
-        if (e is! DioException) rethrow;
       }
 
       // 2. 降级尝试聊天补全多模态生图 (适用于某些将生图封装为 chat/completions 的网关)
@@ -1285,6 +1428,7 @@ $numbered
             'Content-Type': 'application/json',
             'Authorization': 'Bearer $apiKey',
           },
+          receiveTimeout: const Duration(seconds: 180),
         ),
         data: {
           'model': model,
@@ -1304,20 +1448,41 @@ $numbered
       ? value.substring(value.indexOf(',') + 1)
       : value;
 
+  /// 统一清洗上游返回的 base64：去空白折行、url-safe 字符转标准、过滤非法字符、重算 padding。
+  /// 上游（尤其经 JSON/URL 中转的图片数据）常混入 \n、'-'/'_' 或缺 '='，直接解码会抛 FormatException。
+  String _cleanBase64(String raw) {
+    var s = raw.toString().replaceAll(RegExp(r'\s+'), ''); // 去空白折行
+    s = s.replaceAll('-', '+').replaceAll('_', '/'); // url-safe 转标准（必须在过滤前！）
+    s = s.replaceAll(RegExp(r'[^A-Za-z0-9+/=]'), ''); // 过滤非法字符
+    s = s.replaceAll('=', ''); // 重算 padding
+    switch (s.length % 4) {
+      case 2:
+        s += '==';
+      case 3:
+        s += '=';
+      case 1:
+        s = '${s.substring(0, s.length - 1)}==';
+    }
+    return s;
+  }
+
   String _referenceDataUrl(String value) => value.startsWith('data:')
       ? value
       : 'data:${_referenceMimeType(value)};base64,$value';
 
   String _referenceMimeType(String value) {
     if (value.startsWith('data:')) {
-      return value.substring(5, value.indexOf(';'));
+      // 形如 'data:xxx'（无 ';base64,'）的脏值不给 substring 传负终点。
+      final semi = value.indexOf(';');
+      return semi > 5 ? value.substring(5, semi) : 'image/jpeg';
     }
     // 用 Base64 前缀签名判断格式，避免对整张多 MB 图片全量 base64Decode（每页生图反复调用会卡主线程）。
-    // PNG 头 89 50 4E 47 → 'iVBORw0KGgo'；WebP 头 'RIFF....WEBP' → 'UklGR'。
-    if (value.length >= 12 && value.startsWith('iVBORw0KGgo')) {
+    // PNG 魔数前 4 字节 89 50 4E 47 → 'iVBORw'；WebP 头 'RIFF....WEBP' → 'UklGR'。
+    // 注意只匹配前 4 字节魔数：带完整签名的 PNG 以 'iVBORw0KGgo' 开头，同样命中的 'iVBORw'。
+    if (value.length >= 8 && value.startsWith('iVBORw')) {
       return 'image/png';
     }
-    if (value.length >= 12 && value.startsWith('UklGR')) {
+    if (value.length >= 8 && value.startsWith('UklGR')) {
       return 'image/webp';
     }
     return 'image/jpeg';
@@ -1344,8 +1509,9 @@ $numbered
               final u = delta['image_url'] is Map
                   ? delta['image_url']['url']?.toString()
                   : delta['image_url'].toString();
-              if (u != null && u.isNotEmpty)
+              if (u != null && u.isNotEmpty) {
                 return await _downloadImageAsBase64(u);
+              }
             }
           }
 
@@ -1363,16 +1529,18 @@ $numbered
                 } else if (img is String) {
                   u = img;
                 }
-                if (u != null && u.isNotEmpty)
+                if (u != null && u.isNotEmpty) {
                   return await _downloadImageAsBase64(u);
+                }
               }
             }
             if (msg['image_url'] != null) {
               final u = msg['image_url'] is Map
                   ? msg['image_url']['url']?.toString()
                   : msg['image_url'].toString();
-              if (u != null && u.isNotEmpty)
+              if (u != null && u.isNotEmpty) {
                 return await _downloadImageAsBase64(u);
+              }
             }
 
             // message.content 中的纯 URL 或 Markdown 图片语法
@@ -1408,12 +1576,15 @@ $numbered
                 final u = c['image_url'] is Map
                     ? c['image_url']['url']?.toString()
                     : c['image_url'].toString();
-                if (u != null && u.isNotEmpty)
+                if (u != null && u.isNotEmpty) {
                   return await _downloadImageAsBase64(u);
+                }
               }
               if (c['url'] != null) {
                 final u = c['url'].toString();
-                if (u.isNotEmpty) return await _downloadImageAsBase64(u);
+                if (u.isNotEmpty) {
+                  return await _downloadImageAsBase64(u);
+                }
               }
             }
           }
@@ -1428,7 +1599,7 @@ $numbered
         if (item is Map) {
           if (item['b64_json'] != null &&
               item['b64_json'].toString().isNotEmpty) {
-            return item['b64_json'].toString();
+            return _cleanBase64(item['b64_json'].toString());
           }
           final u = item['url']?.toString();
           if (u != null && u.isNotEmpty) {
@@ -1469,21 +1640,22 @@ $numbered
     return null;
   }
 
-  /// 递归深度扫描未知嵌套 JSON 中的有效图片下载链接
+  /// 深度递归兜底扫描：只认明确图片扩展名（.png/.jpg/.jpeg/.webp/.gif）或已知图床域名的 URL。
+  /// 不匹配裸 'image' 子串——那会把 'https://cdn/image-manager/page' 之类非图片链接当图片下载。
+  static final _imageUrlExt = RegExp(
+    r'\.(png|jpg|jpeg|webp|gif)(\?|$)',
+    caseSensitive: false,
+  );
+
   String? _findFirstImageUrl(dynamic node) {
     if (node is Map) {
       for (var entry in node.entries) {
         final val = entry.value;
-        if (val is String &&
-            val.startsWith('http') &&
-            (val.contains('.png') ||
-                val.contains('.jpg') ||
-                val.contains('.jpeg') ||
-                val.contains('.webp') ||
-                val.contains('cos.') ||
-                val.contains('myqcloud.com') ||
-                val.contains('image'))) {
-          return val;
+        if (val is String && val.startsWith('http')) {
+          final lower = val.toLowerCase();
+          final hasImageExt = _imageUrlExt.hasMatch(lower);
+          final knownHost = lower.contains('cos.') || lower.contains('myqcloud.com');
+          if (hasImageExt || knownHost) return val;
         }
         final found = _findFirstImageUrl(val);
         if (found != null) return found;
@@ -1497,10 +1669,12 @@ $numbered
     return null;
   }
 
-  /// 远程图片下载并转换为本地 Base64 编码
+  /// 远程图片下载并转换为本地 Base64 编码。
+  /// 下载结果零校验会把错误页/超长垃圾数据当成图片存进绘本，这里校验
+  /// content-type、大小上限（20MB）与文件头魔数（JPEG/PNG/WebP）。
   Future<String> _downloadImageAsBase64(String imageUrl) async {
     if (imageUrl.startsWith('data:image')) {
-      return imageUrl.split(',').last;
+      return _cleanBase64(imageUrl.split(',').last);
     }
     final response = await _dio.get<List<int>>(
       imageUrl,
@@ -1509,10 +1683,50 @@ $numbered
         receiveTimeout: const Duration(seconds: 60),
       ),
     );
-    if (response.data != null && response.data!.isNotEmpty) {
-      return base64Encode(response.data!);
+    final contentType = (response.headers.value('content-type') ?? '')
+        .toLowerCase();
+    if (!contentType.startsWith('image/')) {
+      throw Exception(
+        '下载上游图片失败：响应不是图片 (content-type: ${contentType.isEmpty ? '缺失' : contentType})',
+      );
     }
-    throw Exception('下载上游生成的图片失败，数据为空');
+    final bytes = response.data;
+    if (bytes == null || bytes.isEmpty) {
+      throw Exception('下载上游生成的图片失败，数据为空');
+    }
+    if (bytes.length > 20 * 1024 * 1024) {
+      throw Exception('下载上游图片失败：文件超过 20MB 上限');
+    }
+    if (!_hasImageMagic(bytes)) {
+      throw Exception('下载上游图片失败：内容不是有效的图片数据');
+    }
+    return base64Encode(bytes);
+  }
+
+  /// JPEG (FFD8FF) / PNG (89504E47) / WebP (RIFF+WEBP) 文件头魔数校验。
+  static bool _hasImageMagic(List<int> b) {
+    if (b.length >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff) {
+      return true; // JPEG
+    }
+    if (b.length >= 8 &&
+        b[0] == 0x89 &&
+        b[1] == 0x50 &&
+        b[2] == 0x4e &&
+        b[3] == 0x47) {
+      return true; // PNG
+    }
+    if (b.length >= 12 &&
+        b[0] == 0x52 &&
+        b[1] == 0x49 &&
+        b[2] == 0x46 &&
+        b[3] == 0x46 &&
+        b[8] == 0x57 &&
+        b[9] == 0x45 &&
+        b[10] == 0x42 &&
+        b[11] == 0x50) {
+      return true; // WebP (RIFF....WEBP)
+    }
+    return false;
   }
 
   /// 提取第三方 AI 平台详细的错误说明（如智谱 1301 敏感词、1214 密钥错误、余额不足等）
@@ -1535,10 +1749,15 @@ $numbered
     }
     final status = dioErr.response?.statusCode;
     if (status != null) {
-      if (status == 401) return 'API Key 无效或未授权 (401)，请检查填写的密钥';
-      if (status == 402 || status == 429)
+      if (status == 401) {
+        return 'API Key 无效或未授权 (401)，请检查填写的密钥';
+      }
+      if (status == 402 || status == 429) {
         return '接口余额不足或请求频率超限 (429/402)，请检查账户额度';
-      if (status == 400) return '接口请求参数错误或提示词触发安全风控拦截 (400)';
+      }
+      if (status == 400) {
+        return '接口请求参数错误或提示词触发安全风控拦截 (400)';
+      }
     }
     return dioErr.message ?? dioErr.toString();
   }

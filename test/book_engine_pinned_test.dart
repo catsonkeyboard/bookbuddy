@@ -340,4 +340,72 @@ void main() {
     );
     expect(sent, isEmpty);
   });
+
+  test('大模型返回幻觉形状时分镜解析不崩溃并给出合理默认值', () async {
+    final engine = BookEngineService(
+      dio: fakeLlmDio({
+        'characters': [
+          {
+            'id': 'c1',
+            'name': '小鹿',
+            'species': '鹿',
+            'isAnimal': true,
+            'appearance': '棕毛小鹿',
+            'defaultOutfit': '',
+          },
+        ],
+        'groups': {},
+        'scenes': [
+          {
+            // text 是对象、characterIds 是字符串、outfitOverrides 是数组：
+            // 都不符合约定，但不能崩，按助手退回默认值。
+            'text': {'line': '不是字符串'},
+            'action': '主人公沿着小路慢慢走',
+            'emotion': '',
+            'composition': '',
+            'characterIds': 'c1',
+            'outfitOverrides': ['不该是数组'],
+          },
+        ],
+      }, []),
+    );
+    final draft = await engine.createStoryboardDraft(
+      settings: openAiSettings(),
+      title: '幻觉形状',
+      storyText: '小鹿沿着小路慢慢走。',
+    );
+    expect(draft.pages, hasLength(1));
+    final page = draft.pages.single;
+    expect(page.text, isA<String>()); // 对象被字符串化，不是崩溃
+    expect(page.sceneAction, '主人公沿着小路慢慢走');
+    expect(page.characterIds, isEmpty); // 字符串不当列表用，且画面描述未提角色名
+    expect(page.outfitOverrides, isEmpty); // 数组不当 map 用
+  });
+
+  test('大模型顶层返回裸数组 JSON 时得到空分镜而不是崩溃', () async {
+    final arrayDio = Dio()
+      ..interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) => handler.resolve(
+            Response(
+              requestOptions: options,
+              data: {
+                'choices': [
+                  {
+                    'message': {'content': '[1, 2, 3]'},
+                  },
+                ],
+              },
+            ),
+          ),
+        ),
+      );
+    final draft = await BookEngineService(dio: arrayDio).createStoryboardDraft(
+      settings: openAiSettings(),
+      title: '裸数组',
+      storyText: '从前有座山。',
+    );
+    expect(draft.pages, isEmpty);
+    expect(draft.characters, isEmpty);
+  });
 }

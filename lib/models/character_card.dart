@@ -116,15 +116,43 @@ class CharacterCard {
         defaultOutfit: json['defaultOutfit']?.toString() ?? '',
         personality: json['personality']?.toString() ?? '',
         catchphrase: json['catchphrase']?.toString() ?? '',
-        // 过滤 null/空值，避免 value.toString() 把 null 变成 "null" 脏路径
-        anchorImagePaths: ((json['anchorImagePaths'] as Map? ?? {})
-                .map((key, value) => MapEntry(key.toString(), value))
-                ..removeWhere(
-                  (_, value) => value == null || value.toString().isEmpty,
-                ))
-            .map((key, value) => MapEntry(key, value.toString())),
-        photoPath: json['photoPath'] as String?,
+        // 过滤 null/空值，避免 value.toString() 把 null 变成 "null" 脏路径；
+        // 同时过滤穿越路径（`../../x`、绝对路径等），与 CharacterStorageService
+        // 的 isSafeRelativePath 同口径——读路径会拒绝它们，删除旧图时也不能碰。
+        anchorImagePaths: _sanitizeAnchorPaths(json['anchorImagePaths']),
+        // 与 anchorImagePaths 同口径：非字符串脏值转字符串后再过安全路径白名单，
+        // 不满足的丢弃——否则单条脏值会让整份 cards.json 解析失败。
+        photoPath: _sanitizePhotoPath(json['photoPath']),
         createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? ''),
         lastUsedAt: DateTime.tryParse(json['lastUsedAt']?.toString() ?? ''),
       );
+
+  /// 照片路径与定妆图同样必须是角色库内的安全相对路径。
+  static String? _sanitizePhotoPath(Object? raw) {
+    if (raw == null) return null;
+    final path = raw.toString();
+    return _isSafeRelativeAnchorPath(path) ? path : null;
+  }
+
+  /// 定妆图路径必须是角色库目录内的安全相对路径，否则丢弃该条目。
+  static Map<String, String> _sanitizeAnchorPaths(Object? raw) {
+    final result = <String, String>{};
+    if (raw is! Map) return result;
+    for (final entry in raw.entries) {
+      final value = entry.value;
+      if (value == null) continue;
+      final path = value.toString();
+      if (path.isEmpty || !_isSafeRelativeAnchorPath(path)) continue;
+      result[entry.key.toString()] = path;
+    }
+    return result;
+  }
+
+  /// 与 CharacterStorageService.isSafeRelativePath 保持一致：
+  /// 非空、非绝对路径、不含反斜杠、每一段都不是空 / '.' / '..'。
+  static bool _isSafeRelativeAnchorPath(String path) =>
+      path.isNotEmpty &&
+      !path.startsWith('/') &&
+      !path.contains('\\') &&
+      path.split('/').every((s) => s.isNotEmpty && s != '.' && s != '..');
 }

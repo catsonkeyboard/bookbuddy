@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -23,7 +23,8 @@ class BookReaderScreen extends StatefulWidget {
   State<BookReaderScreen> createState() => _BookReaderScreenState();
 }
 
-class _BookReaderScreenState extends State<BookReaderScreen> {
+class _BookReaderScreenState extends State<BookReaderScreen>
+    with WidgetsBindingObserver {
   late PictureBook _book;
   late PageController _pageController;
   int _currentPage = 0;
@@ -44,6 +45,18 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   StreamSubscription<void>? _playerCompleteSub;
   PlayerState _playerState = PlayerState.stopped;
   bool _isAudioSynthesizing = false;
+
+  /// 播放/合成入口的同步互斥：[ _togglePlayCurrentPage] 的原入口检查与
+  /// `_isAudioSynthesizing` 置位之间隔着多个 await，连读自动翻页与手动点击
+  /// 可能同时通过检查；forceRegen 路径不参与服务层请求去重，重复进入会双倍
+  /// 调用 MiniMax。该标志在进入函数的第一个 await 之前同步置位。
+  bool _playToggleInFlight = false;
+
+  /// 沉浸式全屏预览：隐藏顶栏、底栏与正文区，插画铺满屏幕纯看图。
+  bool _fullscreenPreview = false;
+
+  /// 全屏预览下顶部控制条（退出按钮 + 书名 + 页码）是否显示；点按画面切换。
+  bool _showPreviewControls = false;
   bool _autoPlayNext = false; // 是否朗读完自动翻下一页
 
   bool get _isPlaying => _playerState == PlayerState.playing;
@@ -55,17 +68,42 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   /// 一帧，看起来就是闪屏。同一份 base64 只解码一次；重绘换了新图后原文不同，自然重新解码。
   final Map<int, (String, Uint8List)> _pageImageBytes = {};
 
+  /// 定妆照弹窗里参考图的解码缓存：弹窗 StatefulBuilder 每次重建都重新解码同一份
+  /// base64 会重复做几 MB 的解码开销，按原文缓存只解一次。
+  final Map<String, Uint8List> _refImageBytes = {};
+
+  /// base64 解码失败时返回空字节而非抛出：损坏数据让 Image 的 errorBuilder/占位
+  /// 显示破图，避免在 build 阶段直接红屏。
+  Uint8List _decodeBase64OrEmpty(String? base64) {
+    if (base64 == null || base64.isEmpty) return Uint8List(0);
+    try {
+      return base64Decode(base64);
+    } catch (_) {
+      return Uint8List(0);
+    }
+  }
+
   Uint8List _imageBytesFor(int pageIndex, String base64) {
     final cached = _pageImageBytes[pageIndex];
     if (cached != null && identical(cached.$1, base64)) return cached.$2;
-    final bytes = base64Decode(base64);
+    final bytes = _decodeBase64OrEmpty(base64);
     _pageImageBytes[pageIndex] = (base64, bytes);
+    return bytes;
+  }
+
+  /// 定妆照/参考图专用解码：带缓存 + 解码保护，供弹窗内 Image.memory 使用。
+  Uint8List _refImageBytesFor(String base64) {
+    final cached = _refImageBytes[base64];
+    if (cached != null) return cached;
+    final bytes = _decodeBase64OrEmpty(base64);
+    _refImageBytes[base64] = bytes;
     return bytes;
   }
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _book = widget.book;
     _pageController = PageController();
 
@@ -85,33 +123,64 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     // 先取消事件订阅再停播放器，避免 dispose 后仍收到回调
     unawaited(_playerStateSub?.cancel() ?? Future.value());
     unawaited(_playerCompleteSub?.cancel() ?? Future.value());
     unawaited(WakelockPlus.disable().catchError((_) {}));
+    if (_fullscreenPreview) {
+      // 全屏中被程序化 pop 等路径直接卸载页面：恢复系统栏再释放。
+      unawaited(_applySystemUiMode(SystemUiMode.edgeToEdge));
+    }
     _audioPlayer.stop();
     _audioPlayer.dispose();
     _pageController.dispose();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 切后台/锁屏时停掉朗读，避免声音在应用不可见时继续播放。
+    if (state == AppLifecycleState.paused) {
+      unawaited(_audioPlayer.pause());
+    }
+  }
+
   /// 朗读完成事件处理（支持翻页连读）
   void _handleAudioCompleted() {
-    if (_autoPlayNext && _currentPage < _book.pages.length - 1) {
-      Future.delayed(const Duration(milliseconds: 600), () {
-        if (!mounted) return;
-        // PageView 尚未挂载时调用 nextPage 会抛异常，先确认有客户端
-        if (!_pageController.hasClients) return;
-        _pageController.nextPage(
-          duration: const Duration(milliseconds: 400),
-          curve: Curves.easeInOut,
-        );
-      });
-    }
+    if (!_autoPlayNext) return;
+    // 记录这是哪一页的朗读：延迟翻页期间用户可能已手动翻页或关掉连读。
+    final completedPage = _currentPage;
+    if (completedPage >= _book.pages.length - 1) return;
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (!mounted) return;
+      // 连读可能已被关闭，或用户翻到了别的页：不再自动翻页。
+      if (!_autoPlayNext || _currentPage != completedPage) return;
+      // PageView 尚未挂载时调用 nextPage 会抛异常，先确认有客户端
+      if (!_pageController.hasClients) return;
+      _pageController.nextPage(
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeInOut,
+      );
+    });
   }
 
   /// 播放或暂停当前页朗读（优先使用本地已缓存音频，未生成则请求 MiniMax 并保存）
   Future<void> _togglePlayCurrentPage({bool forceRegen = false}) async {
+    if (_playToggleInFlight) return;
+    _playToggleInFlight = true;
+    try {
+      await _togglePlayCurrentPageInner(forceRegen: forceRegen);
+    } finally {
+      _playToggleInFlight = false;
+    }
+  }
+
+  Future<void> _togglePlayCurrentPageInner({bool forceRegen = false}) async {
+    // 入口先锁页并做合成互斥：合成期间连读翻页等路径也不能再触发一次合成。
+    final pageIndex = _currentPage;
+    if (_isAudioSynthesizing) return;
+
     // 如果正在播放且未要求强制重成，点击直接暂停
     if (_isPlaying && !forceRegen) {
       await _audioPlayer.pause();
@@ -124,24 +193,47 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
       return;
     }
 
-    final curPage = _book.pages[_currentPage];
+    final curPage = _book.pages[pageIndex];
 
     // 检查本地是否已有音频文件
     final cachedPath = await _ttsService.getCachedAudioPath(
       bookId: _book.id,
-      pageIndex: _currentPage,
+      pageIndex: pageIndex,
       knownPath: curPage.audioPath,
     );
 
+    // 等待期间可能已经翻了页或退出了页面：丢弃这次结果。
+    if (!mounted || _currentPage != pageIndex) return;
+
     if (cachedPath != null && !forceRegen) {
       curPage.audioPath = cachedPath;
-      await _audioPlayer.stop();
-      await _audioPlayer.play(DeviceFileSource(cachedPath));
+      try {
+        // 播放前停掉可能仍在播的上一段，保证从头播放本页。
+        await _audioPlayer.stop();
+        await _audioPlayer.play(DeviceFileSource(cachedPath));
+      } catch (e) {
+        // 文件在缓存检查和播放之间被删/损坏：清掉陈旧路径并落盘，
+        // 让「本地已缓存」状态条改回未生成，下次点击重新合成。
+        curPage.audioPath = null;
+        try {
+          await _storage.saveBook(_book);
+        } catch (_) {}
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('音频播放失败: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
       return;
     }
 
     // 本地未缓存或要求强制重新生成，调用 MiniMax 接口合成
     final settings = await _settingsService.loadSettings();
+    if (!mounted || _currentPage != pageIndex) return;
+
     if (!settings.ttsEnabled) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -164,35 +256,54 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
       return;
     }
 
+    if (!mounted) return;
     setState(() => _isAudioSynthesizing = true);
     try {
       final savedAudioPath = await _ttsService.synthesizePageAudio(
         bookId: _book.id,
-        pageIndex: _currentPage,
+        pageIndex: pageIndex,
         text: curPage.text,
         settings: settings,
         forceRefresh: forceRegen,
       );
+
+      // 合成期间可能已经翻了页或退出了页面：不播放、不弹提示。
+      if (!mounted || _currentPage != pageIndex) return;
 
       curPage.audioPath = savedAudioPath;
       curPage.audioError = null;
 
       // 持久化保存到绘本数据中，下次打开即用
       await _storage.saveBook(_book);
+      if (!mounted || _currentPage != pageIndex) return;
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              forceRegen
-                  ? '🎉 第 ${_currentPage + 1} 页语音已重新生成并已永久保存在本地！'
-                  : '🎉 第 ${_currentPage + 1} 页语音生成完毕，已永久保存在本地！',
-            ),
-            duration: const Duration(seconds: 2),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            forceRegen
+                ? '🎉 第 ${pageIndex + 1} 页语音已重新生成并已永久保存在本地！'
+                : '🎉 第 ${pageIndex + 1} 页语音生成完毕，已永久保存在本地！',
           ),
-        );
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      try {
         await _audioPlayer.stop();
         await _audioPlayer.play(DeviceFileSource(savedAudioPath));
+      } catch (e) {
+        // 刚生成的音频也放不出来（文件被清/损坏）：同步清掉缓存路径。
+        curPage.audioPath = null;
+        try {
+          await _storage.saveBook(_book);
+        } catch (_) {}
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('音频播放失败: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
     } catch (e) {
       curPage.audioError = e.toString();
@@ -235,8 +346,108 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     await _togglePlayCurrentPage(forceRegen: true);
   }
 
+  /// 进入沉浸式全屏预览：从当前页无缝继续（同一个 PageView / PageController），
+  /// 纯看图模式——停掉朗读，翻页不再触发连读自动合成。
+  Future<void> _enterFullscreenPreview() async {
+    if (!mounted) return;
+    setState(() {
+      _fullscreenPreview = true;
+      _showPreviewControls = false;
+      _playerState = PlayerState.stopped;
+    });
+    unawaited(_audioPlayer.stop());
+    await _applySystemUiMode(SystemUiMode.immersiveSticky);
+  }
+
+  Future<void> _exitFullscreenPreview() async {
+    if (!mounted || !_fullscreenPreview) return;
+    setState(() => _fullscreenPreview = false);
+    await _applySystemUiMode(SystemUiMode.edgeToEdge);
+  }
+
+  /// 测试与桌面环境没有系统栏控制通道，失败只忽略。
+  Future<void> _applySystemUiMode(SystemUiMode mode) async {
+    try {
+      await SystemChrome.setEnabledSystemUIMode(mode);
+    } catch (_) {}
+  }
+
+  /// 全屏预览的单页布局：插画以 contain 铺满黑底；损坏/缺图沿用破图占位。
+  Widget _buildFullscreenPage(int index, BookPageItem page) {
+    final b64 = page.imageBase64;
+    final hasImage = b64 != null && b64.isNotEmpty;
+    return Container(
+      color: Colors.black,
+      alignment: Alignment.center,
+      child: hasImage
+          ? Image.memory(
+              _imageBytesFor(index, b64),
+              fit: BoxFit.contain,
+              gaplessPlayback: true,
+              errorBuilder: (_, _, _) => const Icon(
+                Icons.broken_image_outlined,
+                size: 48,
+                color: Colors.orangeAccent,
+              ),
+            )
+          : const Icon(
+              Icons.broken_image_outlined,
+              size: 48,
+              color: Colors.orangeAccent,
+            ),
+    );
+  }
+
+  /// 全屏预览的顶部控制条：半透明渐变背景，含退出按钮、书名与页码。
+  Widget _buildPreviewControlBar(int total) {
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(4, 8, 16, 12),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.black54, Colors.transparent],
+          ),
+        ),
+        child: Row(
+          children: [
+            IconButton(
+              tooltip: '退出全屏预览',
+              icon: const Icon(Icons.fullscreen_exit, color: Colors.white),
+              onPressed: _exitFullscreenPreview,
+            ),
+            Expanded(
+              child: Text(
+                '📖 ${_book.title}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${_currentPage + 1} / $total',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _openRegenDialog() async {
-    final curItem = _book.pages[_currentPage];
+    // 弹窗打开期间连读可能自动翻页：标题、提示词、确认后的重绘都必须锁定
+    // 打开时的这一页，否则会出现「拿 A 页的提示词重绘 B 页」。
+    final pageIndex = _currentPage;
+    final curItem = _book.pages[pageIndex];
     final style = StyleCatalog.styles.firstWhere(
       (s) => s.id == _book.styleId,
       orElse: () => StyleCatalog.styles.first,
@@ -384,7 +595,11 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             ),
             onPressed: () {
               Navigator.pop(ctx);
-              _doRegen(promptCtrl.text.trim(), compositionCtrl.text.trim());
+              _doRegen(
+                pageIndex,
+                promptCtrl.text.trim(),
+                compositionCtrl.text.trim(),
+              );
             },
           ),
         ],
@@ -423,10 +638,29 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                             child: SizedBox(
                               width: 100,
                               height: 120,
-                              child: Image.memory(
-                                base64Decode(_book.protagonistRefImage!),
-                                fit: BoxFit.cover,
-                              ),
+                              child: _refImageBytesFor(_book.protagonistRefImage!)
+                                  .isEmpty
+                              // 参考图数据损坏：显示破图占位而非让 build 抛异常。
+                              ? const Center(
+                                  child: Icon(
+                                    Icons.broken_image_outlined,
+                                    size: 48,
+                                    color: Colors.orangeAccent,
+                                  ),
+                                )
+                              : Image.memory(
+                                  _refImageBytesFor(_book.protagonistRefImage!),
+                                  fit: BoxFit.cover,
+                                  // 弹窗里只按 100x120 展示，限制解码宽度省内存。
+                                  cacheWidth: 300,
+                                  errorBuilder: (_, _, _) => const Center(
+                                    child: Icon(
+                                      Icons.broken_image_outlined,
+                                      size: 48,
+                                      color: Colors.orangeAccent,
+                                    ),
+                                  ),
+                                ),
                             ),
                           ),
                           const SizedBox(width: 14),
@@ -474,13 +708,24 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                         child: CircularProgressIndicator(strokeWidth: 2),
                                       ),
                                     )
-                                  : (character.referenceImageBase64 == null
+                                  : (character.referenceImageBase64 == null ||
+                                          _refImageBytesFor(character.referenceImageBase64!).isEmpty
+                                      // 没有定妆照或数据损坏：显示默认占位。
                                       ? const Center(
                                           child: Icon(Icons.person_outline, size: 48, color: Colors.grey),
                                         )
                                       : Image.memory(
-                                          base64Decode(character.referenceImageBase64!),
+                                          _refImageBytesFor(character.referenceImageBase64!),
                                           fit: BoxFit.cover,
+                                          // 弹窗里只按 100x120 展示，限制解码宽度省内存。
+                                          cacheWidth: 300,
+                                          errorBuilder: (_, _, _) => const Center(
+                                            child: Icon(
+                                              Icons.broken_image_outlined,
+                                              size: 48,
+                                              color: Colors.orangeAccent,
+                                            ),
+                                          ),
                                         )),
                             ),
                           ),
@@ -637,10 +882,12 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   }
 
   Future<void> _doRegen(
+    int pageIndex,
     String fullPromptOverride,
     String compositionOverride,
   ) async {
     if (_isRegenerating || _isBatchDrawing) return;
+    if (pageIndex < 0 || pageIndex >= _book.pages.length) return;
     setState(() => _isRegenerating = true);
     try {
       try {
@@ -652,7 +899,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
         orElse: () => StyleCatalog.styles.first,
       );
 
-      final page = _book.pages[_currentPage];
+      final page = _book.pages[pageIndex];
       if (!await _ensureCharacterReferences(
         settings: settings,
         style: style,
@@ -685,7 +932,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
         await _storage.saveBook(_book);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('🎉 第 ${_currentPage + 1} 页插画已重新生成！')),
+            SnackBar(content: Text('🎉 第 ${pageIndex + 1} 页插画已重新生成！')),
           );
         }
       } else {
@@ -710,6 +957,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     if (pendingPages.isEmpty) return;
 
     final settings = await _settingsService.loadSettings();
+    if (!mounted) return;
     if (settings.imageApiKey.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -870,6 +1118,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
     if (confirm != true || !mounted) return;
 
     final settings = await _settingsService.loadSettings();
+    if (!mounted) return;
     if (settings.imageApiKey.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1039,6 +1288,16 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
 
   /// 删除当前绘本并返回
   Future<void> _confirmDeleteBook() async {
+    // 批量生成/合成进行中删除绘本会让后台任务写回已删数据，先拦住。
+    if (_isBatchDrawing || _isRegenerating || _isAudioSynthesizing) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('正在生成中，请先结束当前任务再删除'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1086,20 +1345,70 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
   @override
   Widget build(BuildContext context) {
     final total = _book.pages.length;
+    // 空 pages 绘本（数据损坏/导入不完整）直接渲染占位，
+    // 否则 _book.pages[_currentPage] 会抛 RangeError 红屏。
+    if (total == 0) {
+      return Scaffold(
+        appBar: AppBar(title: Text('📖 ${_book.title}')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.broken_image_outlined,
+                  size: 48,
+                  color: Colors.orangeAccent,
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  '绘本数据损坏',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '《${_book.title}》没有任何页面内容，可能是文件损坏或导入不完整。',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     final curPage = _book.pages[_currentPage];
     final hasAudioCache =
         curPage.audioPath != null && curPage.audioPath!.isNotEmpty;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('📖 ${_book.title}'),
-        actions: [
-          if (_book.characters.isNotEmpty || _book.protagonistRefImage != null)
-            IconButton(
-              tooltip: '查看角色定妆照与固定设定',
-              icon: const Icon(Icons.people_outline),
-              onPressed: _showCharacterReferences,
-            ),
+    return PopScope(
+      // 全屏预览时系统返回键先退出预览，再按一次才离开阅读器。
+      canPop: !_fullscreenPreview,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _exitFullscreenPreview();
+      },
+      child: Scaffold(
+      backgroundColor: _fullscreenPreview ? Colors.black : null,
+      appBar: _fullscreenPreview
+          ? null
+          : AppBar(
+              title: Text('📖 ${_book.title}'),
+              actions: [
+                IconButton(
+                  tooltip: '全屏预览绘本',
+                  icon: const Icon(Icons.crop_free),
+                  onPressed: (_isBatchDrawing || _isRegenerating)
+                      ? null
+                      : _enterFullscreenPreview,
+                ),
+                if (_book.characters.isNotEmpty ||
+                    _book.protagonistRefImage != null)
+                  IconButton(
+                    tooltip: '查看角色定妆照与固定设定',
+                    icon: const Icon(Icons.people_outline),
+                    onPressed: _showCharacterReferences,
+                  ),
           // 1. 自动连读切换
           Tooltip(
             message: _autoPlayNext ? '自动翻页连读：已开启' : '自动翻页连读：已关闭',
@@ -1137,7 +1446,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
           IconButton(
             tooltip: '重新使用 MiniMax 合成本页语音并覆盖',
             icon: const Icon(Icons.record_voice_over_outlined),
-            onPressed: (_isAudioSynthesizing || _isRegenerating)
+            onPressed: (_isAudioSynthesizing || _isRegenerating || _isBatchDrawing)
                 ? null
                 : _regenerateCurrentPageAudio,
           ),
@@ -1167,7 +1476,7 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                           : Icons.play_arrow_rounded,
                       color: _isPlaying ? Colors.amber : null,
                     ),
-                    onPressed: _isRegenerating
+                    onPressed: (_isRegenerating || _isBatchDrawing)
                         ? null
                         : () => _togglePlayCurrentPage(),
                   ),
@@ -1262,15 +1571,23 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             itemCount: total,
             // 提前构建相邻页，下一页的插画在翻过去之前就解码好，翻页时不会先空白再弹出。
             allowImplicitScrolling: true,
-            onPageChanged: (i) async {
-              await _audioPlayer.stop();
-              setState(() => _currentPage = i);
-              if (_autoPlayNext) {
+            onPageChanged: (i) {
+              // 先同步落页码：快速连翻时各次回调里 stop 的 future 完成顺序不定，
+              // 若等 stop 完成再 setState，后到的回调可能先把页码写回旧值。
+              setState(() {
+                _currentPage = i;
+                // stop 之后播放器状态同步复位，避免按钮图标/行为与实际不符。
+                _playerState = PlayerState.stopped;
+              });
+              unawaited(_audioPlayer.stop());
+              if (_autoPlayNext && !_fullscreenPreview) {
                 _togglePlayCurrentPage();
               }
             },
             itemBuilder: (context, index) {
               final page = _book.pages[index];
+              // 全屏预览：纯插画铺满黑底，不带卡片边框、正文与音频状态条。
+              if (_fullscreenPreview) return _buildFullscreenPage(index, page);
               final isPageCached =
                   page.audioPath != null && page.audioPath!.isNotEmpty;
 
@@ -1300,6 +1617,18 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
                                       fit: BoxFit.cover,
                                       // 重绘换图时保留旧图直到新图解码完成。
                                       gaplessPlayback: true,
+                                      // base64 损坏时 _imageBytesFor 返回空字节，
+                                      // 解码失败走这里显示破图，而非 build 期红屏。
+                                      errorBuilder: (_, _, _) => Container(
+                                        color: Colors.black26,
+                                        child: const Center(
+                                          child: Icon(
+                                            Icons.broken_image_outlined,
+                                            size: 48,
+                                            color: Colors.orangeAccent,
+                                          ),
+                                        ),
+                                      ),
                                     )
                                   : Container(
                                       color: Colors.black26,
@@ -1430,6 +1759,20 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
               );
             },
           ),
+          if (_fullscreenPreview)
+            // 全屏层的点按切换：translucent 让同一指针事件继续传给下层
+            // PageView——点按由本层响应，横向拖拽在手势竞技场由 PageView 的
+            // 滚动手势赢得，翻页不受影响。
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: () {
+                  setState(() => _showPreviewControls = !_showPreviewControls);
+                },
+              ),
+            ),
+          if (_fullscreenPreview && _showPreviewControls)
+            _buildPreviewControlBar(total),
           if (_isBatchDrawing)
             Container(
               color: Colors.black87,
@@ -1556,39 +1899,42 @@ class _BookReaderScreenState extends State<BookReaderScreen> {
             ),
         ],
       ),
-      bottomNavigationBar: Container(
-        height: 64,
-        padding: const EdgeInsets.symmetric(horizontal: 24),
-        color: Theme.of(context).colorScheme.surface,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            ElevatedButton.icon(
-              onPressed: _currentPage > 0
-                  ? () => _pageController.previousPage(
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    )
-                  : null,
-              icon: const Icon(Icons.arrow_back),
-              label: const Text('上一页'),
+      bottomNavigationBar: _fullscreenPreview
+          ? null
+          : Container(
+              height: 64,
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              color: Theme.of(context).colorScheme.surface,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: _currentPage > 0
+                        ? () => _pageController.previousPage(
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeInOut,
+                          )
+                        : null,
+                    icon: const Icon(Icons.arrow_back),
+                    label: const Text('上一页'),
+                  ),
+                  Text(
+                    '第 ${_currentPage + 1} 页 / 共 $total 页',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  ElevatedButton.icon(
+                    onPressed: _currentPage < total - 1
+                        ? () => _pageController.nextPage(
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeInOut,
+                          )
+                        : null,
+                    icon: const Icon(Icons.arrow_forward),
+                    label: const Text('下一页'),
+                  ),
+                ],
+              ),
             ),
-            Text(
-              '第 ${_currentPage + 1} 页 / 共 $total 页',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            ElevatedButton.icon(
-              onPressed: _currentPage < total - 1
-                  ? () => _pageController.nextPage(
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    )
-                  : null,
-              icon: const Icon(Icons.arrow_forward),
-              label: const Text('下一页'),
-            ),
-          ],
-        ),
       ),
     );
   }

@@ -31,7 +31,13 @@ Future<void> runIo(
     await tester.pump();
     if (until != null && until()) break;
   }
-  await tester.pumpAndSettle();
+  // 结尾不能用 pumpAndSettle：until 命中时界面上常还挂着生成中的
+  // CircularProgressIndicator 之类无限动画，pumpAndSettle 必然超时。
+  // 固定泵约 2 秒模拟时间，足够完成对话框 / SnackBar / 转场动画；
+  // 需要完全稳定的调用方自行再调 pumpAndSettle。
+  for (var i = 0; i < 20; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
 }
 
 /// 定妆照成功的 SnackBar 已出现，且转圈动画已停（`finally` 里 `_isGenerating` 已复位）。

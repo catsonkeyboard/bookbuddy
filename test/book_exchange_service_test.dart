@@ -273,6 +273,58 @@ void main() {
     );
   });
 
+  test('恶意 id（路径穿越）被拒绝，不在 booksDir 外创建文件', () async {
+    // 先导出一份正常 .bb，再把 book.json 里的 id 换成恶意值重组 zip——
+    // 不能把恶意 id 用作本机文件路径（那是测试自身会崩的）。
+    final legit = _book();
+    final bytes = await _exportBytes(service, legit, audioDir);
+    final decoded = ZipDecoder().decodeBytes(bytes);
+
+    final evilIds = <String>[
+      '../bookbuddy_characters/cards',
+      r'..\..\evil',
+      'a/b',
+      '/etc/passwd',
+      '..',
+      'id with space',
+      List.filled(65, 'x').join(), // 超长 id
+    ];
+    for (var i = 0; i < evilIds.length; i++) {
+      final evilId = evilIds[i];
+      final evilBook = _book(id: evilId);
+      final evilJson = jsonEncode(evilBook.toJson());
+      final evilArchive = Archive()
+        ..add(decoded.find('mimetype')!)
+        ..add(decoded.find('manifest.json')!)
+        ..add(
+          ArchiveFile('book.json', evilJson.length, utf8.encode(evilJson)),
+        );
+      final f = File('${root.path}/evil-$i.bb');
+      await f.writeAsBytes(ZipEncoder().encodeBytes(evilArchive));
+
+      await expectLater(
+        service.importBookFromFile(f.path),
+        throwsA(
+          isA<BookExchangeException>().having(
+            (e) => e.message,
+            'message',
+            contains('id 非法'),
+          ),
+        ),
+        reason: 'id "$evilId" 应被拒绝',
+      );
+    }
+
+    // 导入全部被拒绝：booksDir 内与其父目录都不应有越狱写入的痕迹。
+    expect(await Directory('${root.path}/../bookbuddy_characters').exists(),
+        isFalse);
+    expect(await File('${root.path}/../evil.json').exists(), isFalse);
+    expect(await Directory('${booksDir.path}/a').exists(), isFalse);
+    // 合法书本身不受影响。
+    final storage = BookStorageService(booksDirectory: booksDir);
+    expect(await storage.loadBook('book-1'), isNull);
+  });
+
   test('mimetype 是第一个条目且未压缩（格式自识别）', () async {
     final book = _book();
     final bytes = await _exportBytes(service, book, audioDir);

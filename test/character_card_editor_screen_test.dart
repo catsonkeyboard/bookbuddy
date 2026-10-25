@@ -82,7 +82,13 @@ void main() {
   });
 
   tearDown(() {
-    if (dir.existsSync()) dir.deleteSync(recursive: true);
+    if (!dir.existsSync()) return;
+    try {
+      dir.deleteSync(recursive: true);
+    } on FileSystemException {
+      // Windows 上引擎解码过的图片文件句柄在进程内无法可靠释放
+      //（evict/clear/unmount 均无效），残留的临时目录交给系统清理。
+    }
   });
 
   Future<void> pumpEditor(
@@ -226,10 +232,19 @@ void main() {
   });
 
   testWidgets('只改性格不触发定妆图失效确认', (tester) async {
+    // 实验：合法 PNG
+    final validPng = base64Encode([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+      0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+      0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+      0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+      0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]);
     final card = CharacterCard(id: 'card_a', name: '豆豆', appearance: '绿色');
     await tester.runAsync(() async {
       await storage.saveCard(card);
-      await storage.saveAnchor('card_a', 'watercolor', pngBase64);
+      await storage.saveAnchor('card_a', 'watercolor', validPng);
     });
     await pumpEditor(tester, card: CharacterCard.fromJson(readCards(dir).single));
     await tester.enterText(find.widgetWithText(TextField, '性格'), '温柔');

@@ -48,7 +48,8 @@ class PictureBook {
         .whereType<Map>()
         .map((c) => BookCharacter.fromJson(Map<String, dynamic>.from(c)))
         .toList(),
-    protagonistRefImage: json['protagonistRefImage'],
+    // 与其它字段一致用 toString() 容错：脏值（数字等）不会让整本绘本解析失败。
+    protagonistRefImage: json['protagonistRefImage']?.toString(),
     characterCardIds: (json['characterCardIds'] as List<dynamic>? ?? [])
         .map((id) => id.toString())
         .toList(),
@@ -147,7 +148,8 @@ class BookCharacter {
     isAnimal: json['isAnimal'] == true,
     appearance: json['appearance']?.toString() ?? '',
     defaultOutfit: json['defaultOutfit']?.toString() ?? '',
-    referenceImageBase64: json['referenceImageBase64'] as String?,
+    // as String? 遇到脏值（数字等）会抛 TypeError 拖垮整本解析，改 toString() 容错。
+    referenceImageBase64: json['referenceImageBase64']?.toString(),
   );
 }
 
@@ -225,9 +227,10 @@ class BookPageItem {
     characterIds: (json['characterIds'] as List<dynamic>? ?? [])
         .map((id) => id.toString())
         .toList(),
-    outfitOverrides: (json['outfitOverrides'] as Map? ?? {}).map(
-      (key, value) => MapEntry(key.toString(), value.toString()),
-    ),
+    // null 值跳过而不是 value.toString()——否则会生成「换装：null」进生图提示词。
+    outfitOverrides: (json['outfitOverrides'] as Map? ?? {})
+        .map((key, value) => MapEntry(key.toString(), value?.toString() ?? ''))
+      ..removeWhere((_, value) => value.isEmpty),
     rawPrompt: json['rawPrompt']?.toString(),
     imageBase64: json['imageBase64']?.toString(),
     imagePath: json['imagePath']?.toString(),

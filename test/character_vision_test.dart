@@ -72,6 +72,33 @@ const style = BookStyle(
   negative: '',
 );
 
+/// 生图用 Gemini 多模态配置（非 imagen → 走 generateContent 分支）。
+AppSettings geminiImageSettings({
+  bool enableImageFallback = false,
+  String fallbackImageApiKey = '',
+}) => AppSettings(
+      imageType: 'gemini',
+      imageBaseUrl: 'https://example.test',
+      imageModel: 'gemini-2.5-flash-image',
+      imageApiKey: 'k',
+      enableImageFallback: enableImageFallback,
+      fallbackImageType: 'openai',
+      fallbackImageBaseUrl: 'https://example.test/v1',
+      fallbackImageModel: 'dall-e-3',
+      fallbackImageApiKey: fallbackImageApiKey,
+    );
+
+/// 用固定响应体拦截所有请求，并记录调用次数。
+Dio fixedReplyDio(Map<String, dynamic> reply, [List<int>? calls]) => Dio()
+  ..interceptors.add(
+    InterceptorsWrapper(
+      onRequest: (options, handler) {
+        calls?.add(1);
+        handler.resolve(Response(requestOptions: options, data: reply));
+      },
+    ),
+  );
+
 final stone = BookCharacter(
   id: 'card_stone',
   name: '小满',
@@ -206,6 +233,8 @@ void main() {
 
   test('支持参考图的通道：定妆照请求带上照片与照片说明', () async {
     final sent = <dynamic>[];
+    // 走 _cleanBase64 出口，mock 值用合法 base64（含 '-' 等非法字符会被清洗改写）。
+    const generated = 'AQIDBA==';
     final engine = BookEngineService(
       dio: recordingDio(sent, () => {
             'candidates': [
@@ -213,7 +242,7 @@ void main() {
                 'content': {
                   'parts': [
                     {
-                      'inlineData': {'data': 'new-image'},
+                      'inlineData': {'data': generated},
                     },
                   ],
                 },
@@ -232,7 +261,7 @@ void main() {
       character: stone,
       photoReferenceBase64: photo,
     );
-    expect(result, 'new-image');
+    expect(result, generated);
     final parts = (sent.single as Map)['contents'][0]['parts'] as List;
     expect(parts.first['inlineData']['data'], photo);
     expect(parts[1]['text'], contains('真实玩具或物件照片'));
@@ -344,5 +373,103 @@ void main() {
     expect(sent, hasLength(2));
     expect(jsonEncode(sent.last), isNot(contains(photo)));
     expect(jsonEncode(sent.last), isNot(contains('真实玩具或物件照片')));
+  });
+
+  test('Gemini 生图空 candidates：不崩溃，返回 null 并落盘未返回图片', () async {
+    final page = BookPageItem(pageIndex: 0, text: '小满在河边。', characterIds: []);
+    final result = await BookEngineService(
+      dio: fixedReplyDio({'candidates': <dynamic>[]}),
+    ).generateIllustration(
+      settings: geminiImageSettings(),
+      style: style,
+      page: page,
+    );
+    expect(result, isNull);
+    expect(page.generationError, '生图接口未返回图片数据');
+  });
+
+  test('Gemini 生图 PROHIBITED_CONTENT：抛内容安全异常且不降级备用通道', () async {
+    final calls = <int>[];
+    final page = BookPageItem(pageIndex: 0, text: '小满在河边。', characterIds: []);
+    await expectLater(
+      BookEngineService(
+        dio: fixedReplyDio({
+          'candidates': [
+            {'finishReason': 'PROHIBITED_CONTENT'},
+          ],
+        }, calls),
+      ).generateIllustration(
+        settings: geminiImageSettings(
+          enableImageFallback: true,
+          fallbackImageApiKey: 'fallback-key',
+        ),
+        style: style,
+        page: page,
+      ),
+      throwsA(
+        isA<ContentBlockedException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('内容安全过滤'), contains('(PROHIBITED_CONTENT)')),
+        ),
+      ),
+    );
+    expect(calls, hasLength(1)); // 内容安全异常不降级，只请求了主通道
+    expect(page.generationError, contains('PROHIBITED_CONTENT'));
+  });
+
+  test('Gemini 生图 finishReason=SAFETY：抛内容安全异常', () async {
+    final page = BookPageItem(pageIndex: 0, text: '小满在河边。', characterIds: []);
+    await expectLater(
+      BookEngineService(
+        dio: fixedReplyDio({
+          'candidates': [
+            {'finishReason': 'SAFETY'},
+          ],
+        }),
+      ).generateIllustration(
+        settings: geminiImageSettings(),
+        style: style,
+        page: page,
+      ),
+      throwsA(
+        isA<ContentBlockedException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('内容安全过滤'), contains('(SAFETY)')),
+        ),
+      ),
+    );
+  });
+
+  test('Gemini 生图 finishReason=MAX_TOKENS：抛中断异常（非安全类）', () async {
+    final calls = <int>[];
+    final page = BookPageItem(pageIndex: 0, text: '小满在河边。', characterIds: []);
+    await expectLater(
+      BookEngineService(
+        dio: fixedReplyDio({
+          'candidates': [
+            {'finishReason': 'MAX_TOKENS'},
+          ],
+        }, calls),
+      ).generateIllustration(
+        settings: geminiImageSettings(
+          enableImageFallback: true,
+          fallbackImageApiKey: 'fallback-key',
+        ),
+        style: style,
+        page: page,
+      ),
+      throwsA(
+        isA<Exception>().having(
+          (e) => e.toString(),
+          'toString',
+          contains('Gemini 生图被中断，原因: MAX_TOKENS'),
+        ),
+      ),
+    );
+    // 非网络/5xx/429/401 类错误不降级：只请求了主通道，错误原样传播。
+    expect(calls, hasLength(1));
+    expect(page.generationError, contains('Gemini 生图被中断'));
   });
 }

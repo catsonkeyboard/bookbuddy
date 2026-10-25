@@ -31,6 +31,11 @@ abstract final class BbFormat {
 
   /// 条目声明解压后尺寸的总和上限：一本书十几 MB 是常态，乘个安全系数。
   static const int maxTotalUncompressedBytes = 400 * 1024 * 1024;
+
+  /// 书 id 安全模式：导入的 book.id 会直接作为文件路径组件拼进落盘路径，
+  /// 必须拒绝路径穿越（`../`、绝对路径、空段等）。应用内 id 均为 uuid v4
+  /// （十六进制 + 连字符），测试用 `book-1` 这类写法也在白名单内。
+  static final RegExp safeBookId = RegExp(r'^[a-zA-Z0-9_\-]{1,64}$');
 }
 
 /// 导入结果：最终落盘的绘本（id/标题可能已因冲突改写）与是否为副本。
@@ -99,9 +104,19 @@ Uint8List _encodeBbBytes(_ExportPayload payload) {
   return ZipEncoder().encodeBytes(archive);
 }
 
-/// 在后台 isolate 里运行：解析 .bb 字节为书 + 音频（只解析，不落盘）。
-(PictureBook, Map<int, Uint8List>) _decodeBbBytes((String, Uint8List) args) {
-  final (path, bytes) = args;
+/// 在后台 isolate 里运行：读取 .bb 文件并解析为书 + 音频（只解析，不落盘）。
+///
+/// 文件读取放在后台 isolate：十几 MB 的 .bb 在主线程 readAsBytes 会卡界面。
+/// 文件不存在 / 是目录 / 无权限等 IO 错误包装成 BookExchangeException 友好文案。
+(PictureBook, Map<int, Uint8List>) _decodeBbBytes(String path) {
+  final Uint8List bytes;
+  try {
+    bytes = File(path).readAsBytesSync();
+  } on FileSystemException catch (e) {
+    throw BookExchangeException(
+      '无法读取文件「${_baseName(path)}」：${e.osError?.message ?? e.message}',
+    );
+  }
   if (bytes.length > BbFormat.maxFileBytes) {
     throw const BookExchangeException('文件超过 100MB 上限，不是有效的绘本文件');
   }
@@ -172,6 +187,12 @@ Uint8List _encodeBbBytes(_ExportPayload payload) {
   if (book.id.isEmpty) {
     throw const BookExchangeException('绘本数据缺少 id，无法导入');
   }
+  // 书 id 会被原样拼成 `${booksDir}/${id}.json` 与音频目录名，是不可信
+  // 输入（.bb 可能来自他人）。含 `../`、分隔符、绝对路径片段的 id 必须在
+  // 落盘前拦截，否则可在应用可写范围内任意创建/覆盖文件。
+  if (!BbFormat.safeBookId.hasMatch(book.id)) {
+    throw const BookExchangeException('绘本数据 id 非法，无法导入');
+  }
 
   final audioFiles = <int, Uint8List>{};
   for (final entry in archive) {
@@ -210,8 +231,13 @@ class _PersistPayload {
 /// 书沿用 BookStorageService 的保存协议（.tmp → 旧文件换名为 .bak → 换名），
 /// 音频按页写入 audioDir/{bookId}/。所有解析校验在此之前已通过。
 void _persistImport(_PersistPayload payload) {
+  // 书架目录可能还不存在（全新安装首次导入），先确保存在再写。
+  final booksDir = Directory(payload.booksDirPath);
+  if (!booksDir.existsSync()) booksDir.createSync(recursive: true);
+
   final file = File('${payload.booksDirPath}/${payload.book.id}.json');
-  final temp = File('${file.path}.tmp');
+  // 临时文件名带 uuid 后缀：并发导入同一本书时不会互相覆写临时文件。
+  final temp = File('${file.path}.${const Uuid().v4()}.tmp');
   temp.writeAsBytesSync(
     JsonUtf8Encoder().convert(payload.book.toJson()),
     flush: true,
@@ -244,7 +270,16 @@ void _persistImport(_PersistPayload payload) {
       final target = File('${audioDir.path}/audio_p$pageIndex.mp3');
       final tmp = File('${target.path}.tmp');
       tmp.writeAsBytesSync(bytes, flush: true);
-      tmp.renameSync(target.path);
+      // Windows 上 rename 到已存在的目标会抛（上次导入中断的残缺状态），
+      // 先删目标再搬；删除失败退回直接覆盖写。
+      try {
+        if (target.existsSync()) target.deleteSync();
+        tmp.renameSync(target.path);
+      } catch (_) {
+        target.writeAsBytesSync(bytes, flush: true);
+      } finally {
+        if (tmp.existsSync()) tmp.deleteSync();
+      }
     });
   }
 }
@@ -296,14 +331,27 @@ class BookExchangeService {
       _encodeBbBytes,
       _ExportPayload(book, audioFiles, appVersion),
     );
+    // 目标目录不存在时先创建，否则 writeAsBytes 抛裸 FileSystemException。
+    final outDir = File(outputPath).parent;
+    if (!await outDir.exists()) {
+      await outDir.create(recursive: true);
+    }
     // 临时文件名加唯一后缀，避免并发导出到同一路径时互相覆盖。
     final tmp = File('$outputPath.${const Uuid().v4()}.tmp');
-    await tmp.writeAsBytes(bytes, flush: true);
     try {
-      await tmp.rename(outputPath);
-    } catch (_) {
-      // 目标已存在时 rename 可能失败（平台差异），退回直接覆盖写。
-      await File(outputPath).writeAsBytes(bytes, flush: true);
+      await tmp.writeAsBytes(bytes, flush: true);
+      try {
+        await tmp.rename(outputPath);
+      } catch (_) {
+        // 目标已存在时 rename 可能失败（平台差异），退回直接覆盖写。
+        await File(outputPath).writeAsBytes(bytes, flush: true);
+      }
+    } catch (e) {
+      if (e is BookExchangeException) rethrow;
+      // 携带底层原因，磁盘/权限问题才有迹可循。
+      throw BookExchangeException(
+        '导出失败：无法写入「${_baseName(outputPath)}」，请检查目标目录是否存在且可写（$e）',
+      );
     } finally {
       if (await tmp.exists()) await tmp.delete();
     }
@@ -312,8 +360,8 @@ class BookExchangeService {
 
   /// 从 .bb 文件导入一本书。本地已有同 id 绘本时存为「（导入）」副本。
   Future<BookImportResult> importBookFromFile(String path) async {
-    final bytes = await File(path).readAsBytes();
-    final (book, audioFiles) = await compute(_decodeBbBytes, (path, bytes));
+    // 读取与解析都在后台 isolate 里进行（_decodeBbBytes 内部读文件）。
+    final (book, audioFiles) = await compute(_decodeBbBytes, path);
 
     final booksDir = await _resolveBooksDirectory();
     final idExists =
@@ -332,6 +380,9 @@ class BookExchangeService {
       _persistImport,
       _PersistPayload(booksDir.path, audioDir.path, finalBook, audioFiles),
     );
+    // 删除过同 id 绘本时存储层留有墓碑（作废后续保存）。导入已把书重新落盘，
+    // 必须撤销墓碑，否则这本书在本进程内的所有修改保存都会被静默丢弃。
+    BookStorageService.clearTombstone(finalBook.id);
 
     BookStorageService.booksChangedNotifier.value++;
     return BookImportResult(book: finalBook, isDuplicateCopy: isDuplicateCopy);

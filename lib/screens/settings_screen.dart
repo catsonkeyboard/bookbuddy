@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
@@ -17,6 +19,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   late AppSettings _settings;
   bool _loading = true;
+  String? _loadError;
 
   // 备用生图 Controllers
   // 注意：用 initState 同步创建的空控制器，而非 late + 异步赋值——
@@ -42,7 +45,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _load() async {
-    _settings = await _service.loadSettings();
+    try {
+      _settings = await _service.loadSettings();
+    } catch (e) {
+      // 加载失败不静默：给出错误状态与重试入口，而不是卡在转圈或崩溃。
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _loadError = '加载配置失败: $e';
+        });
+      }
+      return;
+    }
     // 异步加载期间页面可能已被退出，继续访问 State 会崩溃。
     if (!mounted) return;
 
@@ -59,6 +73,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _loading = false;
     });
+  }
+
+  /// 配置变更后立即落盘：用户可能不点右上角 ✓ 就直接退出页面，
+  /// 仅改内存态的 Profile 切换/删除/编辑会随页面销毁一起丢失。
+  Future<void> _persistSettings() async {
+    try {
+      await _service.saveSettings(_settings);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('配置保存失败: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   @override
@@ -88,7 +119,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
         : 'audiobook_female_1';
     _settings.minimaxSpeed = _ttsSpeed;
 
-    await _service.saveSettings(_settings);
+    try {
+      await _service.saveSettings(_settings);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('保存失败: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -101,24 +144,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _pasteTo(TextEditingController ctrl, String fieldLabel) async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data != null && data.text != null && data.text!.isNotEmpty) {
+      // 等待剪贴板期间页面可能已退出：先确认 mounted 再写控制器，
+      // 否则是往已 dispose 的 TextEditingController 里赋值。
+      if (!mounted) return;
       ctrl.text = data.text!.trim();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('📋 已将剪贴板内容填入 $fieldLabel'),
-            duration: const Duration(seconds: 1),
-          ),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('📋 已将剪贴板内容填入 $fieldLabel'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
     } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('⚠️ 剪贴板为空或无可识别的文本内容'),
-            duration: Duration(seconds: 1),
-          ),
-        );
-      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⚠️ 剪贴板为空或无可识别的文本内容'),
+          duration: Duration(seconds: 1),
+        ),
+      );
     }
   }
 
@@ -150,6 +193,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _settings.activeLlmProfileId = id;
     });
+    unawaited(_persistSettings());
     final active = _settings.activeLlmProfile;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -191,6 +235,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _settings.activeLlmProfileId = _settings.llmProfiles.first.id;
                 }
               });
+              unawaited(_persistSettings());
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text('🗑️ 已删除配置：${p.name}')),
               );
@@ -205,7 +250,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _showEditLlmDialog({LlmProfile? existing}) async {
     final isNew = existing == null;
     final nameCtrl = TextEditingController(text: existing?.name ?? '');
-    String providerType = existing?.providerType ?? 'openai';
     final urlCtrl = TextEditingController(
       text: existing?.baseUrl ?? 'https://api.openai.com/v1',
     );
@@ -213,6 +257,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final modelCtrl = TextEditingController(text: existing?.model ?? 'gpt-4o-mini');
     bool obscureKey = true;
     bool setAsActive = isNew;
+
+    // prefs 里可能存了不在协议列表中的脏值：DropdownButtonFormField 的 value
+    // 必须是 items 之一，否则断言失败红屏；不在列表时回落默认协议。
+    String providerType = const {'gemini', 'openai', 'anthropic'}.contains(existing?.providerType)
+        ? existing!.providerType
+        : 'openai';
 
     // 弹窗关闭后（无论保存/取消）释放局部控制器，避免累积泄漏。
     try {
@@ -490,6 +540,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       }
                     }
                   });
+                  unawaited(_persistSettings());
 
                   Navigator.pop(ctx);
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -517,6 +568,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _settings.activeImageProfileId = id;
     });
+    unawaited(_persistSettings());
     final active = _settings.activeImageProfile;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -558,6 +610,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _settings.activeImageProfileId = _settings.imageProfiles.first.id;
                 }
               });
+              unawaited(_persistSettings());
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(content: Text('🗑️ 已删除生图配置：${p.name}')),
               );
@@ -572,7 +625,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _showEditImageDialog({ImageProfile? existing}) async {
     final isNew = existing == null;
     final nameCtrl = TextEditingController(text: existing?.name ?? '');
-    String providerType = existing?.providerType ?? 'openai';
     final urlCtrl = TextEditingController(
       text: existing?.baseUrl ?? 'https://api.openai.com/v1',
     );
@@ -580,6 +632,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final modelCtrl = TextEditingController(text: existing?.model ?? 'dall-e-3');
     bool obscureKey = true;
     bool setAsActive = isNew;
+
+    // prefs 里可能存了不在协议列表中的脏值：DropdownButtonFormField 的 value
+    // 必须是 items 之一，否则断言失败红屏；不在列表时回落默认协议。
+    String providerType = const {'tokenhub', 'gemini', 'openai'}.contains(existing?.providerType)
+        ? existing!.providerType
+        : 'openai';
 
     // 弹窗关闭后（无论保存/取消）释放局部控制器，避免累积泄漏。
     try {
@@ -599,8 +657,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   modelCtrl.text = 'imagen-3.0-generate-002';
                 }
               } else if (type == 'tokenhub') {
-                urlCtrl.text = 'https://tokenhub.tencentmaas.com/v1/wand/hunyuan-image/v35-generation';
-                modelCtrl.text = 'hy-image-v3.5-preview';
+                // 与其他协议同口径：只有当前值是别的协议默认值或为空时才替换，
+                // 无条件覆盖会把用户填的自定义 TokenHub 网关地址清掉。
+                if (urlCtrl.text.isEmpty || urlCtrl.text.contains('openai') || urlCtrl.text.contains('google')) {
+                  urlCtrl.text = 'https://tokenhub.tencentmaas.com/v1/wand/hunyuan-image/v35-generation';
+                }
+                if (modelCtrl.text.isEmpty || modelCtrl.text.contains('dall-e') || modelCtrl.text.contains('cogview') || modelCtrl.text.contains('imagen')) {
+                  modelCtrl.text = 'hy-image-v3.5-preview';
+                }
               } else {
                 if (urlCtrl.text.isEmpty || urlCtrl.text.contains('google') || urlCtrl.text.contains('tokenhub')) {
                   urlCtrl.text = 'https://api.openai.com/v1';
@@ -819,6 +883,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       }
                     }
                   });
+                  unawaited(_persistSettings());
 
                   Navigator.pop(ctx);
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -904,6 +969,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (_loading) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator()),
+      );
+    }
+    // 加载失败时 _settings 尚未初始化，不能进主界面；给出重试入口。
+    if (_loadError != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('⚙️ 模型与接口配置')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+                const SizedBox(height: 12),
+                Text(
+                  _loadError!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 13, color: Colors.redAccent),
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('重试'),
+                  onPressed: () {
+                    setState(() {
+                      _loading = true;
+                      _loadError = null;
+                    });
+                    _load();
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
       );
     }
 
@@ -1304,13 +1404,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       setState(() {
                         _settings.enableImageFallback = val;
                       });
+                      // 开关类修改立即落盘：用户可能不点右上角 ✓ 就直接退出。
+                      unawaited(_persistSettings());
                     },
                   ),
                   if (_settings.enableImageFallback) ...[
                     const Divider(),
                     const SizedBox(height: 8),
                     DropdownButtonFormField<String>(
-                      value: _settings.fallbackImageType,
+                      // prefs 脏值兜底：值不在协议列表时回落第一项，防断言红屏。
+                      value: const {
+                        'tokenhub',
+                        'openai',
+                        'gemini',
+                      }.contains(_settings.fallbackImageType)
+                          ? _settings.fallbackImageType
+                          : 'tokenhub',
                       decoration: const InputDecoration(
                         labelText: '备用通道协议',
                         border: OutlineInputBorder(),
@@ -1334,6 +1443,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           setState(() {
                             _settings.fallbackImageType = type;
                           });
+                          unawaited(_persistSettings());
                         }
                       },
                     ),
@@ -1389,6 +1499,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       setState(() {
                         _settings.ttsEnabled = val;
                       });
+                      // 开关类修改立即落盘：用户可能不点右上角 ✓ 就直接退出。
+                      unawaited(_persistSettings());
                     },
                   ),
                   if (_settings.ttsEnabled) ...[

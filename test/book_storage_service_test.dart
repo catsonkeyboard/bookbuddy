@@ -6,8 +6,10 @@ import 'package:bookbuddy/services/book_storage_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-PictureBook _book(String title) => PictureBook(
-  id: 'book-1',
+PictureBook _book(String title) => _bookWithId('book-1', title);
+
+PictureBook _bookWithId(String id, String title) => PictureBook(
+  id: id,
   title: title,
   styleId: 'watercolor',
   styleName: 'Watercolor',
@@ -103,6 +105,24 @@ void main() {
     expect(prefs.getBool('bookbuddy_books_migrated_to_files'), isTrue);
   });
 
+  test('migrates legacy data written after a downgrade', () async {
+    // 降级旧版 → 在旧版里写书 → 再升级：迁移标记已是 true，但 legacy
+    // StringList 非空，必须继续迁移，否则这批书会丢。
+    SharedPreferences.setMockInitialValues({
+      'bookbuddy_books_migrated_to_files': true,
+      'bookbuddy_saved_books': [
+        jsonEncode(_book('Legacy After Downgrade').toJson()),
+      ],
+    });
+
+    expect((await storage.loadBookSummaries()).single.title, 'Legacy After Downgrade');
+
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getStringList('bookbuddy_saved_books'), isNull);
+    expect(prefs.getBool('bookbuddy_books_migrated_to_files'), isTrue);
+    expect(await File('${dir.path}/book-1.json').exists(), isTrue);
+  });
+
   test('serializes concurrent saves for the same book', () async {
     await Future.wait([
       storage.saveBook(_book('First')),
@@ -114,10 +134,11 @@ void main() {
 
   test('notifies booksChangedNotifier on saveBook and deleteBook', () async {
     final initialValue = BookStorageService.booksChangedNotifier.value;
-    await storage.saveBook(_book('Notify Test'));
+    // 删除会登记墓碑，用专属 id，避免影响后续用 book-1 的测试。
+    await storage.saveBook(_bookWithId('book-notify', 'Notify Test'));
     expect(BookStorageService.booksChangedNotifier.value, initialValue + 1);
 
-    await storage.deleteBook('book-1');
+    await storage.deleteBook('book-notify');
     expect(BookStorageService.booksChangedNotifier.value, initialValue + 2);
     expect(await storage.loadBooks(), isEmpty);
   });
