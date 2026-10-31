@@ -195,14 +195,13 @@ class BookStorageService {
   /// 全局绘本数据变更通知（新建保存、修改保存或删除时触发），用于通知书架列表即时刷新
   static final ValueNotifier<int> booksChangedNotifier = ValueNotifier<int>(0);
 
-  final Directory? _booksDirectory;
+  final Directory? booksDirectory;
 
-  BookStorageService({Directory? booksDirectory})
-    : _booksDirectory = booksDirectory;
+  BookStorageService({this.booksDirectory});
 
   Future<Directory> _getBooksDirectory() async {
-    final appDir = _booksDirectory ?? await getApplicationDocumentsDirectory();
-    final dir = _booksDirectory ?? Directory('${appDir.path}/bookbuddy_books');
+    final appDir = booksDirectory ?? await getApplicationDocumentsDirectory();
+    final dir = booksDirectory ?? Directory('${appDir.path}/bookbuddy_books');
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }

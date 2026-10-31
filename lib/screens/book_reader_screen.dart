@@ -1020,7 +1020,6 @@ class _BookReaderScreenState extends State<BookReaderScreen>
           );
           if (b64 != null && b64.isNotEmpty) {
             page.imageBase64 = b64;
-            page.isPlaceholder = false;
             page.generationError = null;
             if (_book.characters.isEmpty) _book.protagonistRefImage ??= b64;
           } else {
@@ -1028,7 +1027,6 @@ class _BookReaderScreenState extends State<BookReaderScreen>
           }
         } catch (e) {
           failed++;
-          page.isPlaceholder = true;
           page.generationError = e.toString();
         }
 
@@ -1205,7 +1203,6 @@ class _BookReaderScreenState extends State<BookReaderScreen>
         );
         if (b64 != null && b64.isNotEmpty) {
           firstPage.imageBase64 = b64;
-          firstPage.isPlaceholder = false;
           firstPage.generationError = null;
           _book.protagonistRefImage = b64;
           completedStep++;
@@ -1241,7 +1238,6 @@ class _BookReaderScreenState extends State<BookReaderScreen>
           );
           if (b64 != null && b64.isNotEmpty) {
             page.imageBase64 = b64;
-            page.isPlaceholder = false;
             page.generationError = null;
             if (_book.characters.isEmpty && _book.protagonistRefImage == null) {
               _book.protagonistRefImage = b64;
@@ -1251,7 +1247,6 @@ class _BookReaderScreenState extends State<BookReaderScreen>
           }
         } catch (e) {
           failed++;
-          page.isPlaceholder = true;
           page.generationError = e.toString();
         }
 

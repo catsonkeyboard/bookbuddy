@@ -66,7 +66,10 @@ void main() {
     }
   });
 
-  Future<void> pumpLibrary(WidgetTester tester) => runIo(
+  Future<void> pumpLibrary(
+    WidgetTester tester, {
+    bool Function()? until,
+  }) => runIo(
         tester,
         () => tester.pumpWidget(
           MaterialApp(
@@ -78,10 +81,11 @@ void main() {
         ),
         // 加载完成后 loading 指示器会消失（无论最终是空状态、列表还是错误态）。
         // 卡片先渲染、出演次数随后才到：等到列表带上「出演」字样（或空状态）才算加载完成。
-        until: () =>
-            (find.byType(CircularProgressIndicator).evaluate().isEmpty &&
-                find.textContaining('出演').evaluate().isNotEmpty) ||
-            find.text('还没有角色').evaluate().isNotEmpty,
+        until: until ??
+            () =>
+                (find.byType(CircularProgressIndicator).evaluate().isEmpty &&
+                    find.textContaining('出演').evaluate().isNotEmpty) ||
+                find.text('还没有角色').evaluate().isNotEmpty,
       );
 
   testWidgets('没有卡片时显示空状态', (tester) async {
@@ -188,7 +192,10 @@ void main() {
         ),
       );
     });
-    await pumpLibrary(tester);
+    await pumpLibrary(
+      tester,
+      until: () => find.text('动物 · 定妆图 0 张 · 出演 3 本').evaluate().isNotEmpty,
+    );
     expect(find.text('动物 · 定妆图 0 张 · 出演 3 本'), findsOneWidget);
   });
 }

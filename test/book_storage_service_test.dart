@@ -366,4 +366,49 @@ void main() {
       expect(await storage.loadBook('book-2'), isNull);
     });
   });
+
+  group('BookPageItem.isPlaceholder', () {
+    test('is derived from needIllustration and imageBase64 state', () {
+      final p1 = BookPageItem(pageIndex: 0, text: 'text', needIllustration: true);
+      expect(p1.isPlaceholder, isTrue);
+
+      final p2 = BookPageItem(
+        pageIndex: 1,
+        text: 'text',
+        needIllustration: true,
+        imageBase64: '',
+      );
+      expect(p2.isPlaceholder, isTrue);
+
+      final p3 = BookPageItem(
+        pageIndex: 2,
+        text: 'text',
+        needIllustration: true,
+        imageBase64: 'base64_data',
+      );
+      expect(p3.isPlaceholder, isFalse);
+
+      final p4 = BookPageItem(
+        pageIndex: 3,
+        text: 'text',
+        needIllustration: false,
+        imageBase64: null,
+      );
+      expect(p4.isPlaceholder, isFalse);
+    });
+
+    test('serializes and deserializes cleanly without storing isPlaceholder', () {
+      final page = BookPageItem(pageIndex: 0, text: 'text', needIllustration: true);
+      final json = page.toJson();
+      expect(json.containsKey('isPlaceholder'), isFalse);
+
+      final parsed = BookPageItem.fromJson({
+        'pageIndex': 0,
+        'text': 'text',
+        'isPlaceholder': false, // legacy flag should be ignored
+        'needIllustration': true,
+      });
+      expect(parsed.isPlaceholder, isTrue);
+    });
+  });
 }

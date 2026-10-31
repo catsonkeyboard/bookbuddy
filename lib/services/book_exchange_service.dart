@@ -286,21 +286,19 @@ void _persistImport(_PersistPayload payload) {
 
 /// 导入/导出绘本专用格式 .bb。
 class BookExchangeService {
-  BookExchangeService({Directory? booksDirectory, Directory? audioDirectory})
-    : _booksDirectory = booksDirectory,
-      _audioDirectory = audioDirectory;
+  BookExchangeService({this.booksDirectory, this.audioDirectory});
 
-  final Directory? _booksDirectory;
-  final Directory? _audioDirectory;
+  final Directory? booksDirectory;
+  final Directory? audioDirectory;
 
   Future<Directory> _resolveBooksDirectory() async {
-    if (_booksDirectory != null) return _booksDirectory;
+    if (booksDirectory != null) return booksDirectory!;
     final appDir = await getApplicationDocumentsDirectory();
     return Directory('${appDir.path}/bookbuddy_books');
   }
 
   Future<Directory> _resolveAudioDirectory() async {
-    if (_audioDirectory != null) return _audioDirectory;
+    if (audioDirectory != null) return audioDirectory!;
     final appDir = await getApplicationDocumentsDirectory();
     return Directory('${appDir.path}/bookbuddy_audio');
   }

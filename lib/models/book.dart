@@ -164,7 +164,12 @@ class BookPageItem {
   String? rawPrompt; // 原生图提示词
   String? imageBase64;
   String? imagePath;
-  bool isPlaceholder;
+
+  /// 该页是否处于「需要插画但尚未生成插画」的占位状态。
+  /// 派生属性：无需单独持久化，由插画开关与图像数据共同决定。
+  bool get isPlaceholder =>
+      needIllustration && (imageBase64 == null || imageBase64!.isEmpty);
+
   String? customInstruction;
   bool needIllustration; // 是否生成插画
   String? generationError; // 生图失败原因（如被安全策略拦截）
@@ -185,7 +190,6 @@ class BookPageItem {
     this.rawPrompt,
     this.imageBase64,
     this.imagePath,
-    this.isPlaceholder = false,
     this.customInstruction,
     this.needIllustration = true,
     this.generationError,
@@ -207,7 +211,6 @@ class BookPageItem {
     'rawPrompt': rawPrompt,
     'imageBase64': imageBase64,
     'imagePath': imagePath,
-    'isPlaceholder': isPlaceholder,
     'customInstruction': customInstruction,
     'needIllustration': needIllustration,
     'generationError': generationError,
@@ -234,7 +237,6 @@ class BookPageItem {
     rawPrompt: json['rawPrompt']?.toString(),
     imageBase64: json['imageBase64']?.toString(),
     imagePath: json['imagePath']?.toString(),
-    isPlaceholder: json['isPlaceholder'] == true,
     customInstruction: json['customInstruction']?.toString(),
     // 缺键视为需要插画，仅显式 false 才关闭
     needIllustration: json['needIllustration'] != false,

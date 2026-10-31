@@ -718,7 +718,6 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
       for (int i = 0; i < _pages.length; i++) {
         final page = _pages[i];
         if (!page.needIllustration) {
-          page.isPlaceholder = true;
           continue;
         }
 
@@ -761,15 +760,12 @@ class _StoryboardReviewScreenState extends State<StoryboardReviewScreen> {
               // 主/备通道都未产出图片且未抛异常：保留引擎已写入的
               // generationError（如「生图接口未返回图片数据」），不能抹成
               // null——否则该页既无图也无错误原因，被当成成功空页跳过。
-              page.isPlaceholder = true;
               page.generationError ??= '生图接口未返回图片数据';
             }
           } catch (e) {
-            page.isPlaceholder = true;
             page.generationError = e.toString();
           }
         } else {
-          page.isPlaceholder = true;
           page.generationError = '未配置生图 API Key';
         }
 
