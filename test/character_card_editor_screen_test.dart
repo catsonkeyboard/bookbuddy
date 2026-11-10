@@ -8,7 +8,10 @@ import 'package:bookbuddy/services/book_engine_service.dart';
 import 'package:bookbuddy/services/character_storage_service.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 
 /// 在真实事件循环里执行会产生文件 IO / 网络的操作，随后交替「让出真实时间片」与
 /// 「冲刷一次 FakeAsync 微任务队列」，直到 [until] 成立或达到 [maxRounds]。
@@ -151,6 +154,41 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('请填写角色名和外貌'), findsOneWidget);
     expect(File('${dir.path}/cards.json').existsSync(), isFalse);
+  });
+
+  testWidgets('切换画风后保存对应定妆图原图', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    final binding = TestWidgetsFlutterBinding.ensureInitialized();
+    final saved = <Map>[];
+    binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('gal'), (call) async {
+      if (call.method == 'requestAccess') return true;
+      if (call.method == 'putImageBytes') saved.add(call.arguments as Map);
+      return null;
+    });
+    addTearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('gal'), null);
+    });
+    final watercolor = img.encodePng(img.Image(width: 2, height: 2));
+    final anime = img.encodePng(img.Image(width: 3, height: 3));
+    final card = CharacterCard(id: 'card_a', name: '豆豆', appearance: '绿色');
+    await tester.runAsync(() async {
+      await storage.saveCard(card);
+      await storage.saveAnchor(card.id, 'watercolor', base64Encode(watercolor));
+      await storage.saveAnchor(card.id, 'anime', base64Encode(anime));
+    });
+    await pumpEditor(tester, card: CharacterCard.fromJson(readCards(dir).single));
+    await tester.ensureVisible(find.text('日系动漫'));
+    await tester.tap(find.text('日系动漫'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('保存定妆图'));
+    await runIo(tester, () => tester.tap(find.text('保存定妆图')),
+      until: () => saved.isNotEmpty);
+    expect(saved.single['bytes'], anime);
+    expect(saved.single['name'], '豆豆_日系动漫');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpAndSettle();
+    debugDefaultTargetPlatformOverride = null;
   });
 
   testWidgets('填写必填项后保存落盘并返回', (tester) async {

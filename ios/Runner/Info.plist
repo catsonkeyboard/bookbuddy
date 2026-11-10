@@ -30,6 +30,8 @@
 	<string>拍一张玩具或宠物的照片，用来创建专属的绘本角色。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>从相册选一张玩具或宠物的照片，用来创建专属的绘本角色。</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>将你选择的角色定妆图或绘本插画保存到系统相册。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:bookbuddy/models/book.dart';
 import 'package:bookbuddy/screens/book_reader_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -200,6 +201,74 @@ void main() {
       expect(find.text(missingKeyHint), findsOneWidget);
       await closeReader(tester);
     });
+  });
+
+  testWidgets('翻页及全屏后保存的是当前页原图', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    final saved = <Map>[];
+    binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('gal'), (call) async {
+      if (call.method == 'requestAccess') return true;
+      if (call.method == 'putImageBytes') saved.add(call.arguments as Map);
+      return null;
+    });
+    addTearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(const MethodChannel('gal'), null);
+    });
+    final book = threePageBook();
+    await pumpReader(tester, book);
+    await tester.tap(find.text('下一页'));
+    await tester.pumpAndSettle();
+    await runIo(tester, () => tester.tap(find.text('保存当前页图片')),
+      until: () => saved.isNotEmpty);
+    expect(saved.single['bytes'], base64Decode(book.pages[1].imageBase64!));
+    expect(saved.single['name'], '豆豆的雨天_第2页');
+
+    await tester.tap(find.byTooltip('全屏预览绘本'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(PageView));
+    await tester.pumpAndSettle();
+    await runIo(tester, () => tester.tap(find.byTooltip('保存当前页图片')),
+      until: () => saved.length == 2);
+    expect(saved.last['bytes'], base64Decode(book.pages[1].imageBase64!));
+    await closeReader(tester);
+    debugDefaultTargetPlatformOverride = null;
+  });
+
+  testWidgets('手机窄屏下保存入口保持在屏幕内', (tester) async {
+    await pumpReader(tester, threePageBook());
+    tester.view.physicalSize = const Size(390, 844);
+    await tester.pumpWidget(MaterialApp(
+      key: UniqueKey(),
+      home: const Scaffold(body: Text('书架')),
+      initialRoute: '/reader',
+      routes: {'/reader': (_) => BookReaderScreen(book: threePageBook())},
+    ));
+    await tester.pumpAndSettle();
+    expect(find.byType(BackButton), findsOneWidget);
+    final rect = tester.getRect(find.text('保存当前页图片'));
+    expect(rect.left, greaterThanOrEqualTo(0));
+    expect(rect.right, lessThanOrEqualTo(390));
+    expect(rect.overlaps(tester.getRect(find.byType(BackButton))), isFalse);
+    await tester.tap(find.byTooltip('更多操作'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('开启自动翻页连读'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('更多操作'));
+    await tester.pumpAndSettle();
+    expect(find.text('关闭自动翻页连读'), findsOneWidget);
+    expect(find.text('重绘当前页插画'), findsOneWidget);
+    expect(find.text('重新合成本页语音'), findsOneWidget);
+    await closeReader(tester);
+  });
+
+  testWidgets('没有插画的页面禁用保存', (tester) async {
+    final book = threePageBook();
+    book.pages[0].imageBase64 = null;
+    await pumpReader(tester, book);
+    final button = tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '保存当前页图片'));
+    expect(button.onPressed, isNull);
+    await closeReader(tester);
   });
 
   testWidgets('下一页的插画在翻页前就已经准备好', (tester) async {

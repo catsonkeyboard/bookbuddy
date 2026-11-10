@@ -14,6 +14,7 @@ import '../services/character_storage_service.dart';
 import '../services/photo_picker_service.dart';
 import '../services/photo_preprocessor.dart';
 import '../services/settings_service.dart';
+import '../widgets/save_image_button.dart';
 import 'confirm_dialog.dart';
 import 'settings_screen.dart';
 
@@ -723,6 +724,20 @@ class _CharacterCardEditorScreenState extends State<CharacterCardEditorScreen> {
               ),
               const SizedBox(height: 16),
               _buildAnchorPreview(anchorPath),
+              if (anchorPath != null) ...[
+                const SizedBox(height: 8),
+                SaveImageButton(
+                  name: '${_card.name}_${style.name}',
+                  label: '保存定妆图',
+                  enabled: !_busy,
+                  loadBytes: () async {
+                    final fresh = _freshAnchors[style.id];
+                    if (fresh != null) return fresh;
+                    final file = await _storage.imageFile(anchorPath);
+                    return file.readAsBytes();
+                  },
+                ),
+              ],
               if (anchorPath != null && _staleAnchorStyles.contains(_styleId))
                 const Padding(
                   padding: EdgeInsets.only(top: 8),

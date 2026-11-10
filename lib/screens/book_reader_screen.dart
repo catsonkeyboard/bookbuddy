@@ -13,6 +13,7 @@ import '../services/book_engine_service.dart';
 import '../services/book_storage_service.dart';
 import '../services/settings_service.dart';
 import '../services/tts_service.dart';
+import '../widgets/save_image_button.dart';
 import 'confirm_dialog.dart';
 
 class BookReaderScreen extends StatefulWidget {
@@ -398,6 +399,21 @@ class _BookReaderScreenState extends State<BookReaderScreen>
     );
   }
 
+  Widget _buildSavePageButton({int? index, bool iconOnly = true}) {
+    final pageIndex = index ?? _currentPage;
+    final image = _book.pages[pageIndex].imageBase64;
+    return SaveImageButton(
+      name: '${_book.title}_第${pageIndex + 1}页',
+      label: '保存当前页图片',
+      iconOnly: iconOnly,
+      foregroundColor: _fullscreenPreview ? Colors.white : null,
+      enabled: image != null &&
+          image.isNotEmpty &&
+          !_isRegenerating && !_isBatchDrawing,
+      loadBytes: () async => _imageBytesFor(pageIndex, image!),
+    );
+  }
+
   /// 全屏预览的顶部控制条：半透明渐变背景，含退出按钮、书名与页码。
   Widget _buildPreviewControlBar(int total) {
     return Positioned(
@@ -429,6 +445,7 @@ class _BookReaderScreenState extends State<BookReaderScreen>
               ),
             ),
             const SizedBox(width: 8),
+            _buildSavePageButton(),
             Text(
               '${_currentPage + 1} / $total',
               style: const TextStyle(
@@ -1374,6 +1391,7 @@ class _BookReaderScreenState extends State<BookReaderScreen>
       );
     }
     final curPage = _book.pages[_currentPage];
+    final compactControls = MediaQuery.sizeOf(context).width < 600;
     final hasAudioCache =
         curPage.audioPath != null && curPage.audioPath!.isNotEmpty;
 
@@ -1405,7 +1423,7 @@ class _BookReaderScreenState extends State<BookReaderScreen>
                     onPressed: _showCharacterReferences,
                   ),
           // 1. 自动连读切换
-          Tooltip(
+          if (!compactControls) Tooltip(
             message: _autoPlayNext ? '自动翻页连读：已开启' : '自动翻页连读：已关闭',
             child: TextButton.icon(
               style: TextButton.styleFrom(
@@ -1438,7 +1456,7 @@ class _BookReaderScreenState extends State<BookReaderScreen>
           ),
 
           // 2. 重新生成本页语音按钮
-          IconButton(
+          if (!compactControls) IconButton(
             tooltip: '重新使用 MiniMax 合成本页语音并覆盖',
             icon: const Icon(Icons.record_voice_over_outlined),
             onPressed: (_isAudioSynthesizing || _isRegenerating || _isBatchDrawing)
@@ -1478,7 +1496,7 @@ class _BookReaderScreenState extends State<BookReaderScreen>
           ),
 
           // 4. 重绘插画按钮
-          IconButton(
+          if (!compactControls) IconButton(
             tooltip: '修改说明并重绘当前页插画',
             icon: const Icon(Icons.brush),
             onPressed: (_isRegenerating || _isBatchDrawing)
@@ -1486,7 +1504,7 @@ class _BookReaderScreenState extends State<BookReaderScreen>
                 : _openRegenDialog,
           ),
           // 5. 如果全书有尚未生成的插画，提供一键批量补画入口
-          if (_book.hasUnfinishedIllustrations)
+          if (!compactControls && _book.hasUnfinishedIllustrations)
             Padding(
               padding: const EdgeInsets.only(right: 6.0),
               child: ElevatedButton.icon(
@@ -1513,7 +1531,7 @@ class _BookReaderScreenState extends State<BookReaderScreen>
               ),
             ),
           // 6. 重新生成全书插画按钮
-          IconButton(
+          if (!compactControls) IconButton(
             tooltip: '重新生成全书插画 (先绘制角色再绘制全书)',
             icon: const Icon(Icons.auto_fix_high),
             color: const Color(0xFFD8A24A),
@@ -1530,9 +1548,40 @@ class _BookReaderScreenState extends State<BookReaderScreen>
                 _startRegenerateAllIllustrations();
               } else if (val == 'delete_book') {
                 _confirmDeleteBook();
+              } else if (val == 'toggle_auto') {
+                setState(() => _autoPlayNext = !_autoPlayNext);
+              } else if (val == 'regen_audio') {
+                _regenerateCurrentPageAudio();
+              } else if (val == 'regen_page') {
+                _openRegenDialog();
+              } else if (val == 'draw_missing') {
+                _startBatchDrawMissing();
               }
             },
             itemBuilder: (ctx) => [
+              if (compactControls) ...[
+                PopupMenuItem(
+                  value: 'toggle_auto',
+                  child: Text(_autoPlayNext ? '关闭自动翻页连读' : '开启自动翻页连读'),
+                ),
+                PopupMenuItem(
+                  value: 'regen_audio',
+                  enabled: !_isAudioSynthesizing && !_isRegenerating && !_isBatchDrawing,
+                  child: const Text('重新合成本页语音'),
+                ),
+                PopupMenuItem(
+                  value: 'regen_page',
+                  enabled: !_isRegenerating && !_isBatchDrawing,
+                  child: const Text('重绘当前页插画'),
+                ),
+                if (_book.hasUnfinishedIllustrations)
+                  PopupMenuItem(
+                    value: 'draw_missing',
+                    enabled: !_isRegenerating && !_isBatchDrawing,
+                    child: Text('补画剩余插画 (${_book.pendingIllustrationPages.length})'),
+                  ),
+                const PopupMenuDivider(),
+              ],
               const PopupMenuItem(
                 value: 'regen_all',
                 child: Row(
@@ -1683,7 +1732,11 @@ class _BookReaderScreenState extends State<BookReaderScreen>
                                     ),
                             ),
                           ),
-                          const SizedBox(height: 16),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: _buildSavePageButton(index: index, iconOnly: false),
+                          ),
+                          const SizedBox(height: 8),
                           Expanded(
                             flex: 2,
                             child: Column(
@@ -1898,7 +1951,7 @@ class _BookReaderScreenState extends State<BookReaderScreen>
           ? null
           : Container(
               height: 64,
-              padding: const EdgeInsets.symmetric(horizontal: 24),
+              padding: EdgeInsets.symmetric(horizontal: compactControls ? 12 : 24),
               color: Theme.of(context).colorScheme.surface,
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1911,11 +1964,11 @@ class _BookReaderScreenState extends State<BookReaderScreen>
                           )
                         : null,
                     icon: const Icon(Icons.arrow_back),
-                    label: const Text('上一页'),
+                    label: Text(compactControls ? '上页' : '上一页'),
                   ),
                   Text(
                     '第 ${_currentPage + 1} 页 / 共 $total 页',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: compactControls ? 12 : null),
                   ),
                   ElevatedButton.icon(
                     onPressed: _currentPage < total - 1
@@ -1925,7 +1978,7 @@ class _BookReaderScreenState extends State<BookReaderScreen>
                           )
                         : null,
                     icon: const Icon(Icons.arrow_forward),
-                    label: const Text('下一页'),
+                    label: Text(compactControls ? '下页' : '下一页'),
                   ),
                 ],
               ),
